@@ -8,3 +8,16 @@ outputs/
 datasets/*
 !datasets/sacre_coeur/
 datasets/sacre_coeur/query
+
+# Inference pipeline outputs
+inference/maps/*/
+!inference/maps/.gitkeep
+inference/queries/*
+!inference/queries/.gitkeep
+
+# Model weights and caches
+*.pt
+*.pth
+*.ckpt
+.cache/
+torch_hub/

@@ -1,0 +1,2 @@
+# Maps are generated here by build_map.py
+# Each video creates a subdirectory: maps/{video_name}/
