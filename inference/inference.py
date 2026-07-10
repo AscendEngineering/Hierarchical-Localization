@@ -224,21 +224,21 @@ def run_inference(map_name: str):
     # Use same feature configuration as build_map.py
     # Must match exactly for feature matching to work
     feature_conf = {
-        "output": "feats-superpoint-n8192-r1600",
+        "output": "feats-aliked-n8192-r1024",
         "model": {
-            "name": "superpoint",
-            "nms_radius": 3,
-            "max_keypoints": 8192,
+            "name": "aliked",
+            "model_name": "aliked-n16",
+            "max_num_keypoints": 8192,
         },
         "preprocessing": {
-            "grayscale": True,
-            "resize_max": 1600,
+            "grayscale": False,
+            "resize_max": 1024,
         },
     }
     
     # Extract features from all query images
     query_features = extract_features.main(
-        conf=feature_conf,               # SuperPoint configuration
+        conf=feature_conf,               # ALIKED configuration
         image_dir=queries_dir,           # Query images directory
         export_dir=query_outputs_dir     # Where to save features
     )
@@ -300,8 +300,8 @@ def run_inference(map_name: str):
     # ============ MATCH FEATURES AND LOCALIZE (PER-IMAGE) ============
     print("\n[5/5] Matching features and localizing queries...")
     
-    # Use SuperGlue-fast matcher (5 iterations instead of 50)
-    matcher_conf = match_features.confs["superglue-fast"]
+    # Use ALIKED+LightGlue matcher
+    matcher_conf = match_features.confs["aliked+lightglue"]
     
     # Path to map features
     map_features_path = map_outputs_dir / f"{feature_conf['output']}.h5"

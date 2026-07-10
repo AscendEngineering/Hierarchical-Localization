@@ -124,9 +124,9 @@ def build_map(video_name: str):
     
     Steps:
     1. Extract frames from video
-    2. Extract SuperPoint features from all frames
+    2. Extract ALIKED features from all frames
     3. Create exhaustive image pairs (all-to-all matching)
-    4. Match features using SuperGlue
+    4. Match features using LightGlue
     5. Build COLMAP reconstruction
     """
     
@@ -189,28 +189,29 @@ def build_map(video_name: str):
         return None
     
     # ============ STEP 2: CONFIGURE FEATURE EXTRACTION ============
-    print("\n[2/6] Extracting SuperPoint features...")
+    print("\n[2/6] Extracting ALIKED features...")
     
-    # Enhanced SuperPoint configuration for better reconstruction:
+    # ALIKED configuration for better reconstruction:
+    # - Uses color images (grayscale=False)
     # - 8192 keypoints 
-    # - 1600px max resolution
+    # - 1024px max resolution
     feature_conf = {
-        "output": "feats-superpoint-n8192-r1600",
+        "output": "feats-aliked-n8192-r1024",
         "model": {
-            "name": "superpoint",
-            "nms_radius": 3,
-            "max_keypoints": 8192,
+            "name": "aliked",
+            "model_name": "aliked-n16",
+            "max_num_keypoints": 8192,
         },
         "preprocessing": {
-            "grayscale": True,
-            "resize_max": 1600,
+            "grayscale": False,
+            "resize_max": 1024,
         },
     }
     
     # Extract local features from all frames
     # Returns path to the HDF5 file containing features
     local_features_path = extract_features.main(
-        conf=feature_conf,           # SuperPoint configuration
+        conf=feature_conf,           # ALIKED configuration
         image_dir=frames_dir,        # Directory containing images
         export_dir=outputs_dir       # Where to save features
     )
@@ -274,15 +275,15 @@ def build_map(video_name: str):
     print(f"  Combined {len(all_pairs)} unique pairs (sequential + retrieval)")
     
     # ============ STEP 4: MATCH FEATURES ============
-    print("\n[4/6] Matching features with SuperGlue...")
+    print("\n[4/6] Matching features with LightGlue...")
     
-    # Get the SuperGlue-fast matcher configuration (5 iterations instead of 50)
-    matcher_conf = match_features.confs["superglue-fast"]
+    # Get the ALIKED+LightGlue matcher configuration
+    matcher_conf = match_features.confs["aliked+lightglue"]
     
     # Match features between all image pairs
     # Returns path to the HDF5 file containing matches
     matches = match_features.main(
-        conf=matcher_conf,                      # SuperGlue configuration
+        conf=matcher_conf,                      # LightGlue configuration
         pairs=sfm_pairs_path,                   # Image pairs to match
         features=feature_conf["output"],        # Feature type name
         export_dir=outputs_dir                  # Where to save matches
