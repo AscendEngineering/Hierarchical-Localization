@@ -8,6 +8,7 @@ outputs/
 datasets/*
 !datasets/sacre_coeur/
 datasets/sacre_coeur/query
+.vscode/
 
 # Inference pipeline outputs
 inference/maps/*/

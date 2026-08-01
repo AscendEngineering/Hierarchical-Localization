@@ -173,13 +173,13 @@ def run_inference(map_name: str):
     print(f"Running inference on map: {map_name}")
     print(f"{'='*50}\n")
     
-    # Check if map exists
+    # If map doesn't exist, exit
     if not sfm_dir.exists():
         print(f"Error: Map not found at {sfm_dir}")
         print(f"Run 'python build_map.py {map_name}.mp4' first.")
         sys.exit(1)
     
-    # Check if queries directory exists
+    # If queries directory doesn't exist, exit
     if not queries_dir.exists():
         print(f"Error: Queries directory not found at {queries_dir}")
         print("Create the directory and add query images.")
@@ -188,7 +188,7 @@ def run_inference(map_name: str):
     # Get list of query images
     query_images = get_query_images(queries_dir)
     
-    # Check if there are any query images
+    # If there are no query images, exit
     if len(query_images) == 0:
         print(f"Error: No query images found in {queries_dir}")
         print("Add .jpg, .png, or other image files to the queries folder.")
@@ -253,19 +253,19 @@ def run_inference(map_name: str):
     # Use MegaLoc for global image descriptors (must match build_map.py)
     retrieval_conf = extract_features.confs["megaloc"]
     
-    # Check if map retrieval features exist
+    # Create map retrieval features path
     map_retrieval_path = map_outputs_dir / f"{retrieval_conf['output']}.h5"
     
-    # Extract retrieval features for map images (if not already done)
+    # If map retrieval features do not exist, extract them
     if not map_retrieval_path.exists():
         print("  Extracting retrieval features for map images...")
         map_retrieval = extract_features.main(
-            conf=retrieval_conf,
-            image_dir=frames_dir,
-            export_dir=map_outputs_dir
+            conf=retrieval_conf,        # MegaLoc configuration for map images
+            image_dir=frames_dir,       # Map images directory
+            export_dir=map_outputs_dir  # Where to save map retrieval features
         )
+    # Else use existing features
     else:
-        # Use existing features
         map_retrieval = map_retrieval_path
     
     # Extract retrieval features for query images
@@ -309,7 +309,8 @@ def run_inference(map_name: str):
     # Path for localization results
     results_path = query_outputs_dir / "localization_results.txt"
     
-    # Parse retrieval pairs to get per-query pairs
+    # Parse top-N most similar map images, and store them per query as a dictionary
+    # Build lookup table (dictionary): query image → list of top-30 similar map frames
     query_to_db_images = {}
     with open(pairs_loc_path) as f:
         for line in f:
@@ -327,7 +328,9 @@ def run_inference(map_name: str):
     all_poses = {}
     all_logs = {}
     
+    # For each query image 
     for img_idx, img_path in enumerate(query_images):
+        # Get the name of the current query image
         img_name = img_path.name
         img_start = time.time()
         
@@ -341,16 +344,19 @@ def run_inference(map_name: str):
         
         # Match features for this query
         single_matches = match_features.main(
-            conf=matcher_conf,
-            pairs=single_pairs_path,
-            features=feature_conf["output"],
-            export_dir=query_outputs_dir,
-            features_ref=map_features_path,
-            overwrite=True
+            conf=matcher_conf,                  # ALIKED+LightGlue matcher configuration
+            pairs=single_pairs_path,            # Path to single-image pairs file
+            features=feature_conf["output"],    # Path to query features
+            export_dir=query_outputs_dir,       # Where to save matches
+            features_ref=map_features_path,     # Path to map features
+            overwrite=True                      # Overwrite existing matches if any
         )
         
         # Create single-query intrinsics file
         single_query_path = query_outputs_dir / f"query-{img_name}.txt"
+        
+        # Calculate approximate camera intrinsics
+        # TODO: Use pycolmap.infer_camera_from_image function
         img_cv = cv2.imread(str(img_path))
         h, w = img_cv.shape[:2]
         focal = 0.7 * max(w, h)
@@ -361,12 +367,12 @@ def run_inference(map_name: str):
         # Localize this single query
         single_results_path = query_outputs_dir / f"results-{img_name}.txt"
         localize_sfm.main(
-            reference_sfm=sfm_dir,
-            queries=single_query_path,
-            retrieval=single_pairs_path,
-            features=query_features,
-            matches=single_matches,
-            results=single_results_path
+            reference_sfm=sfm_dir,          # Path to the reference SfM model
+            queries=single_query_path,      # Path to the single-query intrinsics file
+            retrieval=single_pairs_path,    # Path to pairs of (query_image, db_image) to consider
+            features=query_features,        # HDF5 file with query features
+            matches=single_matches,         # HDF5 file with query-map matches
+            results=single_results_path     # Where to save localization results
         )
         
         img_time = time.time() - img_start
@@ -384,11 +390,11 @@ def run_inference(map_name: str):
                 logs_data = pickle.load(f)
                 all_logs.update(logs_data.get('loc', {}))
     
-    # Write combined results
+    # Write combined results of camera position in world coordinates
     with open(results_path, 'w') as f:
         for name, pose in all_poses.items():
-            qvec = pose['qvec']
-            tvec = pose['tvec']
+            qvec = pose['qvec']     # Quaternion 
+            tvec = pose['tvec']     # Position 
             f.write(f"{name} {qvec[0]} {qvec[1]} {qvec[2]} {qvec[3]} {tvec[0]} {tvec[1]} {tvec[2]}\n")
     
     total_time = time.time() - total_start
