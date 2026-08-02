@@ -35,6 +35,13 @@ class SuperPointONNXWrapper:
             detection_threshold=self.conf.get("detection_threshold", 0.0005),
             device=self.conf.get("device", "cuda"),
         )
+        # Warmup to trigger CUDA kernel compilation
+        self._warmup()
+    
+    def _warmup(self):
+        """Run dummy inference to compile CUDA kernels."""
+        dummy = np.random.rand(1, 768, 1024).astype(np.float32)
+        _ = self._model.extract(dummy)
     
     def eval(self):
         return self
@@ -114,6 +121,18 @@ class LightGlueONNXWrapper:
             features=features,
             device=self.conf.get("device", "cuda"),
         )
+        # Warmup to trigger CUDA/TensorRT kernel compilation
+        self._warmup()
+    
+    def _warmup(self):
+        """Run dummy inference to compile CUDA kernels."""
+        n_kpts = 500
+        dummy_kp0 = np.random.rand(n_kpts, 2).astype(np.float32) * 500
+        dummy_kp1 = np.random.rand(n_kpts, 2).astype(np.float32) * 500
+        dummy_desc0 = np.random.rand(n_kpts, self.desc_dim).astype(np.float32)
+        dummy_desc1 = np.random.rand(n_kpts, self.desc_dim).astype(np.float32)
+        _ = self._model.match(dummy_kp0, dummy_kp1, dummy_desc0, dummy_desc1,
+                              image_size0=(768, 1024), image_size1=(768, 1024))
     
     def eval(self):
         return self
