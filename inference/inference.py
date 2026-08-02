@@ -16,6 +16,7 @@ import pickle
 import shutil
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 # NumPy for numerical operations
@@ -123,6 +124,30 @@ def parse_localization_results(results_file: Path) -> dict:
     
     # Return all parsed poses
     return poses
+
+
+def _extract_superpoint(conf, image_dir, export_dir, model):
+    """Extract SuperPoint features (for parallel execution)."""
+    t = time.time()
+    result = extract_features.main(
+        conf=conf,
+        image_dir=image_dir,
+        export_dir=export_dir,
+        model=model
+    )
+    return result, time.time() - t
+
+
+def _extract_megaloc(conf, image_dir, export_dir, model):
+    """Extract MegaLoc global descriptors (for parallel execution)."""
+    t = time.time()
+    result = extract_features.main(
+        conf=conf,
+        image_dir=image_dir,
+        export_dir=export_dir,
+        model=model
+    )
+    return result, time.time() - t
 
 
 def run_inference(map_name: str):
@@ -270,25 +295,22 @@ def run_inference(map_name: str):
         single_img_path = single_query_dir / img_name
         sh.copy(img_path, single_img_path)
         
-        # --- STEP 1: Extract SuperPoint features ---
-        t0 = time.time()
-        single_features = extract_features.main(
-            conf=feature_conf,
-            image_dir=single_query_dir,
-            export_dir=single_query_dir,
-            model=superpoint_model  # Pre-loaded model
-        )
-        breakdown['superpoint'] = time.time() - t0
+        # --- STEP 1 & 2: Extract features in PARALLEL ---
+        # SuperPoint and MegaLoc are independent, so we run them concurrently
+        t0_parallel = time.time()
         
-        # --- STEP 2: Extract MegaLoc retrieval features ---
-        t0 = time.time()
-        single_retrieval = extract_features.main(
-            conf=retrieval_conf,
-            image_dir=single_query_dir,
-            export_dir=single_query_dir,
-            model=megaloc_model  # Pre-loaded model
-        )
-        breakdown['megaloc'] = time.time() - t0
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            sp_future = executor.submit(
+                _extract_superpoint, feature_conf, single_query_dir, single_query_dir, superpoint_model
+            )
+            ml_future = executor.submit(
+                _extract_megaloc, retrieval_conf, single_query_dir, single_query_dir, megaloc_model
+            )
+            
+            single_features, breakdown['superpoint'] = sp_future.result()
+            single_retrieval, breakdown['megaloc'] = ml_future.result()
+        
+        breakdown['feature_extraction'] = time.time() - t0_parallel
         
         # --- STEP 3: Find similar map images ---
         t0 = time.time()
@@ -342,8 +364,10 @@ def run_inference(map_name: str):
         per_image_timings[img_name] = img_total
         per_image_breakdown[img_name] = breakdown
         
-        print(f"    SuperPoint: {breakdown['superpoint']:.2f}s | MegaLoc: {breakdown['megaloc']:.2f}s | "
-              f"Retrieval: {breakdown['retrieval']:.2f}s | Match: {breakdown['matching']:.2f}s | "
+        parallel_savings = breakdown['superpoint'] + breakdown['megaloc'] - breakdown['feature_extraction']
+        print(f"    Features (parallel): {breakdown['feature_extraction']:.2f}s "
+              f"[SP:{breakdown['superpoint']:.2f}s + ML:{breakdown['megaloc']:.2f}s, saved {parallel_savings:.2f}s]")
+        print(f"    Retrieval: {breakdown['retrieval']:.2f}s | Match: {breakdown['matching']:.2f}s | "
               f"Localize: {breakdown['localization']:.2f}s")
         print(f"    TOTAL: {img_total:.2f}s")
         
@@ -365,8 +389,11 @@ def run_inference(map_name: str):
     avg_breakdown = {k: 0 for k in per_image_breakdown[list(per_image_breakdown.keys())[0]]}
     for name, breakdown in per_image_breakdown.items():
         print(f"    {name}:")
-        print(f"      SuperPoint: {breakdown['superpoint']:.2f}s")
-        print(f"      MegaLoc:    {breakdown['megaloc']:.2f}s")
+        print(f"      Feature extraction (parallel): {breakdown['feature_extraction']:.2f}s")
+        print(f"        - SuperPoint: {breakdown['superpoint']:.2f}s")
+        print(f"        - MegaLoc:    {breakdown['megaloc']:.2f}s")
+        parallel_savings = breakdown['superpoint'] + breakdown['megaloc'] - breakdown['feature_extraction']
+        print(f"        - Saved:      {parallel_savings:.2f}s")
         print(f"      Retrieval:  {breakdown['retrieval']:.2f}s")
         print(f"      Matching:   {breakdown['matching']:.2f}s")
         print(f"      Localize:   {breakdown['localization']:.2f}s")
@@ -377,8 +404,11 @@ def run_inference(map_name: str):
     n_images = len(per_image_breakdown)
     print(f"  ---------------------------------")
     print(f"  AVERAGE per image:")
-    print(f"    SuperPoint: {avg_breakdown['superpoint']/n_images:.2f}s")
-    print(f"    MegaLoc:    {avg_breakdown['megaloc']/n_images:.2f}s")
+    print(f"    Feature extraction (parallel): {avg_breakdown['feature_extraction']/n_images:.2f}s")
+    print(f"      - SuperPoint: {avg_breakdown['superpoint']/n_images:.2f}s")
+    print(f"      - MegaLoc:    {avg_breakdown['megaloc']/n_images:.2f}s")
+    avg_savings = (avg_breakdown['superpoint'] + avg_breakdown['megaloc'] - avg_breakdown['feature_extraction']) / n_images
+    print(f"      - Saved:      {avg_savings:.2f}s")
     print(f"    Retrieval:  {avg_breakdown['retrieval']/n_images:.2f}s")
     print(f"    Matching:   {avg_breakdown['matching']/n_images:.2f}s")
     print(f"    Localize:   {avg_breakdown['localization']/n_images:.2f}s")
