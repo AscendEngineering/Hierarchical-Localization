@@ -332,7 +332,7 @@ def run_inference(map_name: str):
         matches_path = match_features.main(
             conf=matcher_conf,                  # SuperPoint+LightGlue ONNX TRT configuration
             pairs=pairs_path,                   # Path to pairs file (query, db_image)
-            features=feature_conf["output"],   # Query features filename
+            features=feature_conf["output"],    # Query features filename
             export_dir=single_query_dir,        # Where to save matches
             features_ref=map_features_path,     # Path to map features HDF5
             overwrite=True,                     # Overwrite existing matches

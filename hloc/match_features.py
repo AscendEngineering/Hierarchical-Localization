@@ -202,14 +202,22 @@ def match_from_paths_fast(
     
     # If a reference cache is provided, use it to load reference features
     if ref_cache is not None:
-        def load_ref(name: str) -> Dict:
+        # Partition keys into hits and misses
+        cache_hits, cache_misses = ref_cache.partition_keys(ref_names)
+        ref_cache.record_stats(hits=len(cache_hits), misses=len(cache_misses))
+        
+        # Batch load all misses with single file open (much faster than per-miss opens)
+        if cache_misses:
             with h5py.File(feature_path_ref, "r") as fd:
-                grp = fd[name]
-                feats = {k: torch.from_numpy(v.__array__()).float()
-                         for k, v in grp.items() if k != "image_size"}
-                feats["image_size"] = tuple(grp["image_size"])
-            return feats
-        ref_features = {name: ref_cache.get(name, load_ref) for name in ref_names}
+                for name in cache_misses:
+                    grp = fd[name]
+                    feats = {k: torch.from_numpy(v.__array__()).float()
+                             for k, v in grp.items() if k != "image_size"}
+                    feats["image_size"] = tuple(grp["image_size"])
+                    ref_cache.put(name, feats)
+        
+        # Get all features from cache (now all should be present)
+        ref_features = ref_cache.get_many(ref_names)
     # Else load directly from HDF5
     else:
         ref_features = {}

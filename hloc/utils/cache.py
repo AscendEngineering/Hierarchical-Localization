@@ -6,7 +6,7 @@ on eviction. Works with any data type: tensors, dicts, numpy arrays, etc.
 """
 
 from collections import OrderedDict
-from typing import Any, Callable, Dict, Optional, TypeVar
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, TypeVar
 
 import torch
 
@@ -111,6 +111,58 @@ class LRUCache:
     def __len__(self) -> int:
         """Return number of items in cache."""
         return len(self._cache)
+    
+    def partition_keys(self, keys: Iterable[str]) -> Tuple[List[str], List[str]]:
+        """
+        Partition keys into hits (in cache) and misses (not in cache).
+        
+        Does NOT update stats - caller should call record_stats() after loading misses.
+        
+        Args:
+            keys: Iterable of cache keys to check
+            
+        Returns:
+            Tuple of (hits_list, misses_list)
+        """
+        hits = []
+        misses = []
+        for key in keys:
+            if key in self._cache:
+                hits.append(key)
+            else:
+                misses.append(key)
+        return hits, misses
+    
+    def record_stats(self, hits: int, misses: int) -> None:
+        """
+        Record hit/miss statistics (for batch operations).
+        
+        Args:
+            hits: Number of cache hits to record
+            misses: Number of cache misses to record
+        """
+        self._hits += hits
+        self._misses += misses
+    
+    def get_many(self, keys: Iterable[str]) -> Dict[str, Any]:
+        """
+        Get multiple items from cache, marking all as recently used.
+        
+        Only returns items that exist in cache. Does NOT track stats
+        (caller should use partition_keys + record_stats for proper tracking).
+        
+        Args:
+            keys: Iterable of cache keys to retrieve
+            
+        Returns:
+            Dict mapping keys to cached values (only for keys that exist)
+        """
+        result = {}
+        for key in keys:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+                result[key] = self._cache[key]
+        return result
     
     def _to_device(self, data: Any) -> Any:
         """Recursively move tensors to device."""
