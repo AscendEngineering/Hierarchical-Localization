@@ -1,0 +1,199 @@
+"""
+LightGlue ONNX matcher.
+
+Runs LightGlue feature matching using ONNX Runtime with TensorRT acceleration.
+Matches keypoints between image pairs based on their descriptors.
+"""
+
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+import numpy as np
+
+# Import ort from utils  
+from ..utils import ort, get_onnx_providers, create_session
+
+# Model directory for this module
+MODELS_DIR = Path(__file__).parent / "models"
+
+
+class LightGlueONNX:
+    """
+    LightGlue feature matcher using ONNX Runtime.
+    
+    Matches keypoints between two images using learned attention.
+    Supports TensorRT for ~3x speedup over PyTorch.
+    """
+    
+    DESCRIPTOR_DIMS = {
+        "superpoint": 256,
+        "disk": 128,
+        "aliked": 128,
+    }
+    
+    def __init__(
+        self,
+        model_path: Optional[Path] = None,
+        features: str = "superpoint",
+        device: str = "cuda",
+        trt_cache_dir: Optional[Path] = None,
+    ):
+        """
+        Args:
+            model_path: Path to ONNX model. Auto-detects if None.
+            features: Feature type ("superpoint", "disk", "aliked")
+            device: "cuda" or "cpu"
+            trt_cache_dir: Directory for TensorRT engine cache
+        """
+        if ort is None:
+            raise ImportError("onnxruntime not installed. Run: pip install onnxruntime-gpu")
+        
+        self.features = features
+        self.desc_dim = self.DESCRIPTOR_DIMS.get(features, 256)
+        
+        # Find model
+        if model_path is None:
+            model_path = self._find_model(features)
+        model_path = Path(model_path)
+        
+        if not model_path.exists():
+            raise FileNotFoundError(f"Model not found: {model_path}")
+        
+        # Check if TRT-compatible model
+        is_trt_model = ".trt.onnx" in str(model_path)
+        
+        # Build providers
+        if is_trt_model and device == "cuda":
+            providers, provider_options = self._build_trt_providers(trt_cache_dir)
+        else:
+            providers, provider_options = get_onnx_providers(device=device, use_tensorrt=False)
+        
+        print(f"Loading LightGlue ONNX from {model_path}...")
+        self.session = create_session(model_path, providers, provider_options)
+        self.provider = self.session.get_providers()[0]
+        print(f"  Provider: {self.provider}")
+        
+        self.input_names = [i.name for i in self.session.get_inputs()]
+        self.output_names = [o.name for o in self.session.get_outputs()]
+    
+    def _find_model(self, features: str) -> Path:
+        """Locate the best available model file."""
+        # Check for TRT-optimized model first
+        for name in ["lightglue_onnx.trt.onnx", "lightglue_onnx_fused.onnx"]:
+            candidate = MODELS_DIR / name
+            if candidate.exists():
+                return candidate
+        
+        raise FileNotFoundError(
+            f"LightGlue ONNX model not found.\n"
+            "Download from: https://github.com/fabio-sim/LightGlue-ONNX/releases"
+        )
+    
+    def _build_trt_providers(self, cache_dir: Optional[Path]) -> Tuple[List[str], List[Dict]]:
+        """Build TensorRT provider config with dynamic shape profiles."""
+        if cache_dir is None:
+            cache_dir = MODELS_DIR / ".trt_cache"
+        cache_dir = Path(cache_dir)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Dynamic shapes for variable keypoint counts
+        d = self.desc_dim
+        min_shapes = f"kpts0:1x1x2,kpts1:1x1x2,desc0:1x1x{d},desc1:1x1x{d}"
+        opt_shapes = f"kpts0:1x2048x2,kpts1:1x2048x2,desc0:1x2048x{d},desc1:1x2048x{d}"
+        max_shapes = f"kpts0:1x8192x2,kpts1:1x8192x2,desc0:1x8192x{d},desc1:1x8192x{d}"
+        
+        providers = [
+            "TensorrtExecutionProvider",
+            "CUDAExecutionProvider",
+            "CPUExecutionProvider",
+        ]
+        provider_options = [
+            {
+                "trt_fp16_enable": True,
+                "trt_engine_cache_enable": True,
+                "trt_engine_cache_path": str(cache_dir),
+                "trt_profile_min_shapes": min_shapes,
+                "trt_profile_max_shapes": max_shapes,
+                "trt_profile_opt_shapes": opt_shapes,
+            },
+            {"device_id": 0},
+            {},
+        ]
+        
+        return providers, provider_options
+    
+    def match(
+        self,
+        keypoints0: np.ndarray,
+        keypoints1: np.ndarray,
+        descriptors0: np.ndarray,
+        descriptors1: np.ndarray,
+        image_size0: Optional[Tuple[int, int]] = None,
+        image_size1: Optional[Tuple[int, int]] = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Match features between two images.
+        
+        Args:
+            keypoints0: [N, 2] keypoints from image 0 (x, y pixels)
+            keypoints1: [M, 2] keypoints from image 1
+            descriptors0: [N, D] descriptors from image 0
+            descriptors1: [M, D] descriptors from image 1
+            image_size0: (H, W) of image 0 for normalization
+            image_size1: (H, W) of image 1 for normalization
+        
+        Returns:
+            matches: [K, 2] matched index pairs (idx0, idx1)
+            scores: [K] match confidence scores
+        """
+        N0, N1 = len(keypoints0), len(keypoints1)
+        
+        # Add batch dimension
+        kp0 = keypoints0[np.newaxis, :, :].astype(np.float32)
+        kp1 = keypoints1[np.newaxis, :, :].astype(np.float32)
+        desc0 = descriptors0[np.newaxis, :, :].astype(np.float32)
+        desc1 = descriptors1[np.newaxis, :, :].astype(np.float32)
+        
+        # Normalize keypoints to [-1, 1]
+        if image_size0 is not None:
+            h0, w0 = image_size0
+            kp0 = 2.0 * kp0 / np.array([[[w0, h0]]], dtype=np.float32) - 1.0
+        
+        if image_size1 is not None:
+            h1, w1 = image_size1
+            kp1 = 2.0 * kp1 / np.array([[[w1, h1]]], dtype=np.float32) - 1.0
+        
+        # Run inference
+        outputs = self.session.run(
+            self.output_names,
+            {"kpts0": kp0, "kpts1": kp1, "desc0": desc0, "desc1": desc1}
+        )
+        
+        # Parse outputs
+        if len(outputs) == 2:
+            matches_raw, scores_raw = outputs
+        else:
+            matches_raw = outputs[0]
+            scores_raw = np.ones(len(matches_raw), dtype=np.float32)
+        
+        matches_raw = np.asarray(matches_raw, dtype=np.int64)
+        scores_raw = np.asarray(scores_raw, dtype=np.float32)
+        
+        # Filter valid matches
+        if len(matches_raw) > 0:
+            valid = (matches_raw[:, 0] < N0) & (matches_raw[:, 1] < N1)
+            matches_raw = matches_raw[valid]
+            scores_raw = scores_raw[valid]
+        
+        return matches_raw, scores_raw
+    
+    def __call__(
+        self,
+        keypoints0: np.ndarray,
+        keypoints1: np.ndarray,
+        descriptors0: np.ndarray,
+        descriptors1: np.ndarray,
+        **kwargs,
+    ) -> Dict[str, np.ndarray]:
+        """Match features, returning dict format."""
+        matches, scores = self.match(keypoints0, keypoints1, descriptors0, descriptors1, **kwargs)
+        return {"matches": matches, "scores": scores}

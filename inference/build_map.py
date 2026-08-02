@@ -124,9 +124,9 @@ def build_map(video_name: str):
     
     Steps:
     1. Extract frames from video
-    2. Extract ALIKED features from all frames
+    2. Extract SuperPoint features from all frames (ONNX-accelerated)
     3. Create exhaustive image pairs (all-to-all matching)
-    4. Match features using LightGlue
+    4. Match features using LightGlue (TensorRT-accelerated)
     5. Build COLMAP reconstruction
     """
     
@@ -189,21 +189,20 @@ def build_map(video_name: str):
         return None
     
     # ============ STEP 2: CONFIGURE FEATURE EXTRACTION ============
-    print("\n[2/6] Extracting ALIKED features...")
+    print("\n[2/6] Extracting SuperPoint features (ONNX-accelerated)...")
     
-    # ALIKED configuration for better reconstruction:
-    # - Uses color images (grayscale=False)
-    # - 8192 keypoints 
+    # SuperPoint ONNX configuration for TensorRT-accelerated pipeline:
+    # - Grayscale images (SuperPoint requirement)
+    # - 4096 keypoints for good coverage
     # - 1024px max resolution
     feature_conf = {
-        "output": "feats-aliked-n8192-r1024",
+        "output": "feats-superpoint-n4096-r1024",
         "model": {
-            "name": "aliked",
-            "model_name": "aliked-n16",
-            "max_num_keypoints": 8192,
+            "name": "superpoint_onnx",
+            "max_num_keypoints": 4096,
         },
         "preprocessing": {
-            "grayscale": False,
+            "grayscale": True,
             "resize_max": 1024,
         },
     }
@@ -231,9 +230,9 @@ def build_map(video_name: str):
     # Sequential window size, larger for more images
     seq_window = 20 if num_images > 50 else 10
     
-    # Step 3a: Extract global descriptors
-    print("  Extracting global descriptors (MegaLoc)...")
-    global_conf = extract_features.confs["megaloc"]
+    # Step 3a: Extract global descriptors (using ONNX for TensorRT acceleration)
+    print("  Extracting global descriptors (MegaLoc ONNX)...")
+    global_conf = extract_features.confs["megaloc_onnx"]
     global_features_path = extract_features.main(
         conf=global_conf,
         image_dir=frames_dir,
@@ -275,10 +274,10 @@ def build_map(video_name: str):
     print(f"  Combined {len(all_pairs)} unique pairs (sequential + retrieval)")
     
     # ============ STEP 4: MATCH FEATURES ============
-    print("\n[4/6] Matching features with LightGlue...")
+    print("\n[4/6] Matching features with LightGlue (TensorRT-accelerated)...")
     
-    # Get the ALIKED+LightGlue matcher configuration
-    matcher_conf = match_features.confs["aliked+lightglue"]
+    # Use SuperPoint + LightGlue ONNX with TensorRT
+    matcher_conf = match_features.confs["superpoint_onnx+lightglue_onnx"]
     
     # Match features between all image pairs
     # Returns path to the HDF5 file containing matches

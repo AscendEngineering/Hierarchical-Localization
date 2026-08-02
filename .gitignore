@@ -22,3 +22,14 @@ inference/queries/*
 *.ckpt
 .cache/
 torch_hub/
+
+# ONNX models 
+onnx_models/megaloc_onnx/models/*.onnx
+onnx_models/megaloc_onnx/models/*.onnx.data
+
+# TensorRT cache (GPU-specific, auto-generated)
+onnx_models/*/models/.trt_cache/
+.trt_cache/
+
+ISSUES.md
+KNOWLEDGE.md

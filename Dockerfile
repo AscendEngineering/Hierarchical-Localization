@@ -19,5 +19,18 @@ RUN pip3 install --break-system-packages huggingface_hub safetensors
 RUN pip3 install --break-system-packages notebook
 RUN pip3 install --break-system-packages -e .
 
+# Install ONNX Runtime with CUDA 12 support for accelerated inference
+RUN pip3 install --break-system-packages nvidia-cudnn-cu12
+
+# Install TensorRT for maximum ONNX acceleration (2.5-3x speedup)
+# TensorRT requires specific CUDA version - use cu12 for CUDA 12.x
+RUN pip3 install --break-system-packages tensorrt-cu12 tensorrt-cu12-bindings tensorrt-cu12-libs
+
+# Install ONNX Runtime with TensorRT support
+RUN pip3 install --break-system-packages onnxruntime-gpu --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
+
+# Set library path for cuDNN and TensorRT
+ENV LD_LIBRARY_PATH=/usr/local/lib/python3.12/dist-packages/nvidia/cudnn/lib:/usr/local/lib/python3.12/dist-packages/tensorrt_libs:$LD_LIBRARY_PATH
+
 # Pre-download models to cache
 RUN python3 -c "import torch; torch.hub.load('gmberton/MegaLoc', 'get_trained_model', trust_repo=True)"

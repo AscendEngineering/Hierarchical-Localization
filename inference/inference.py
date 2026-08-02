@@ -203,306 +203,217 @@ def run_inference(map_name: str):
     timings = {}
     total_start = time.time()
     
-    # ============ LOAD MAP ============
-    print(f"\n[1/5] Loading map from {sfm_dir}...")
-    step_start = time.time()
+    # ============ ONE-TIME SETUP ============
+    print(f"\n[SETUP] Loading map and models (one-time)...")
+    setup_start = time.time()
     
     # Load COLMAP reconstruction
-    model = pycolmap.Reconstruction(sfm_dir)
+    colmap_model = pycolmap.Reconstruction(sfm_dir)
+    print(f"  Map: {colmap_model.num_reg_images()} images, {colmap_model.num_points3D()} points")
     
-    timings['load_map'] = time.time() - step_start
-    
-    # Print map statistics
-    print(f"  Registered images: {model.num_reg_images()}")
-    print(f"  3D points: {model.num_points3D()}")
-    print(f"  Time: {timings['load_map']:.2f}s")
-    
-    # ============ EXTRACT QUERY FEATURES ============
-    print("\n[2/5] Extracting features from query images...")
-    step_start = time.time()
-    
-    # Use same feature configuration as build_map.py
-    # Must match exactly for feature matching to work
+    # Configuration for feature extraction
     feature_conf = {
-        "output": "feats-aliked-n8192-r1024",
+        "output": "feats-superpoint-n4096-r1024",
         "model": {
-            "name": "aliked",
-            "model_name": "aliked-n16",
-            "max_num_keypoints": 8192,
+            "name": "superpoint_onnx",
+            "max_num_keypoints": 4096,
         },
         "preprocessing": {
-            "grayscale": False,
+            "grayscale": True,
             "resize_max": 1024,
         },
     }
     
-    # Extract features from all query images
-    query_features = extract_features.main(
-        conf=feature_conf,               # ALIKED configuration
-        image_dir=queries_dir,           # Query images directory
-        export_dir=query_outputs_dir     # Where to save features
-    )
+    # Configuration for retrieval (ONNX/TensorRT accelerated)
+    retrieval_conf = extract_features.confs["megaloc_onnx"]
     
-    timings['extract_features'] = time.time() - step_start
-    print(f"  Time: {timings['extract_features']:.2f}s ({timings['extract_features']/len(query_images):.2f}s/image)")
+    # Configuration for matching
+    matcher_conf = match_features.confs["superpoint_onnx+lightglue_onnx"]
     
-    # ============ EXTRACT RETRIEVAL DESCRIPTORS ============
-    print("\n[3/5] Computing image retrieval descriptors...")
-    step_start = time.time()
+    # Pre-load all models (one-time)
+    print("  Loading SuperPoint ONNX...")
+    superpoint_model = extract_features.get_model(feature_conf)
     
-    # Use MegaLoc for global image descriptors (must match build_map.py)
-    retrieval_conf = extract_features.confs["megaloc"]
+    print("  Loading MegaLoc ONNX with TensorRT...")
+    megaloc_model = extract_features.get_model(retrieval_conf)
     
-    # Create map retrieval features path
+    print("  Loading LightGlue TensorRT matcher...")
+    matcher_model = match_features.get_model(matcher_conf)
+    
+    # Paths to pre-computed map features (compatible with both megaloc and megaloc_onnx)
+    map_features_path = map_outputs_dir / f"{feature_conf['output']}.h5"
     map_retrieval_path = map_outputs_dir / f"{retrieval_conf['output']}.h5"
     
-    # If map retrieval features do not exist, extract them
-    if not map_retrieval_path.exists():
-        print("  Extracting retrieval features for map images...")
-        map_retrieval = extract_features.main(
-            conf=retrieval_conf,        # MegaLoc configuration for map images
-            image_dir=frames_dir,       # Map images directory
-            export_dir=map_outputs_dir  # Where to save map retrieval features
-        )
-    # Else use existing features
-    else:
-        map_retrieval = map_retrieval_path
+    timings['setup'] = time.time() - setup_start
+    print(f"  Setup time: {timings['setup']:.2f}s")
     
-    # Extract retrieval features for query images
-    print("  Extracting retrieval features for query images...")
-    query_retrieval = extract_features.main(
-        conf=retrieval_conf,             # MegaLoc configuration
-        image_dir=queries_dir,           # Query images directory
-        export_dir=query_outputs_dir     # Where to save features
-    )
+    # ============ PROCESS EACH IMAGE (TRUE PER-IMAGE LATENCY) ============
+    print(f"\n[INFERENCE] Processing {len(query_images)} queries (full pipeline each)...")
     
-    timings['retrieval'] = time.time() - step_start
-    print(f"  Time: {timings['retrieval']:.2f}s")
-    
-    # ============ FIND MATCHING IMAGE PAIRS ============
-    print("\n[4/5] Finding similar map images for each query...")
-    step_start = time.time()
-    
-    # Path for localization pairs file
-    pairs_loc_path = query_outputs_dir / "pairs-loc.txt"
-    
-    # Find top-N most similar map images for each query
-    pairs_from_retrieval.main(
-        descriptors=query_retrieval,         # Query global descriptors
-        output=pairs_loc_path,               # Where to save pairs
-        num_matched=30,                      # Number of similar images
-        db_descriptors=map_retrieval         # Map global descriptors
-    )
-    
-    timings['pair_finding'] = time.time() - step_start
-    print(f"  Time: {timings['pair_finding']:.2f}s")
-    
-    # ============ MATCH FEATURES AND LOCALIZE (PER-IMAGE) ============
-    print("\n[5/5] Matching features and localizing queries...")
-    
-    # Use ALIKED+LightGlue matcher
-    matcher_conf = match_features.confs["aliked+lightglue"]
-    
-    # Path to map features
-    map_features_path = map_outputs_dir / f"{feature_conf['output']}.h5"
-    
-    # Path for localization results
-    results_path = query_outputs_dir / "localization_results.txt"
-    
-    # Parse top-N most similar map images, and store them per query as a dictionary
-    # Build lookup table (dictionary): query image → list of top-30 similar map frames
-    query_to_db_images = {}
-    with open(pairs_loc_path) as f:
-        for line in f:
-            parts = line.strip().split()
-            if len(parts) == 2:
-                q_name, db_name = parts
-                if q_name not in query_to_db_images:
-                    query_to_db_images[q_name] = []
-                query_to_db_images[q_name].append(db_name)
-    
-    # Store per-image timings
     per_image_timings = {}
-    
-    # Process each query image individually for accurate timing
+    per_image_breakdown = {}
     all_poses = {}
-    all_logs = {}
-    
-    # For each query image 
+
     for img_idx, img_path in enumerate(query_images):
-        # Get the name of the current query image
         img_name = img_path.name
-        img_start = time.time()
+        print(f"\n  [{img_idx + 1}/{len(query_images)}] {img_name}")
         
-        print(f"\n  Processing [{img_idx + 1}/{len(query_images)}] {img_name}...")
+        img_total_start = time.time()
+        breakdown = {}
         
-        # Create single-image pairs file
-        single_pairs_path = query_outputs_dir / f"pairs-{img_name}.txt"
-        with open(single_pairs_path, 'w') as f:
-            for db_name in query_to_db_images.get(img_name, []):
-                f.write(f"{img_name} {db_name}\n")
+        # Create temp directory for this single image
+        single_query_dir = query_outputs_dir / f"query_{img_idx}"
+        single_query_dir.mkdir(parents=True, exist_ok=True)
         
-        # Match features for this query
-        single_matches = match_features.main(
-            conf=matcher_conf,                  # ALIKED+LightGlue matcher configuration
-            pairs=single_pairs_path,            # Path to single-image pairs file
-            features=feature_conf["output"],    # Path to query features
-            export_dir=query_outputs_dir,       # Where to save matches
-            features_ref=map_features_path,     # Path to map features
-            overwrite=True                      # Overwrite existing matches if any
+        # Copy image to temp directory
+        import shutil as sh
+        single_img_path = single_query_dir / img_name
+        sh.copy(img_path, single_img_path)
+        
+        # --- STEP 1: Extract SuperPoint features ---
+        t0 = time.time()
+        single_features = extract_features.main(
+            conf=feature_conf,
+            image_dir=single_query_dir,
+            export_dir=single_query_dir,
+            model=superpoint_model  # Pre-loaded model
         )
+        breakdown['superpoint'] = time.time() - t0
         
-        # Create single-query intrinsics file
-        single_query_path = query_outputs_dir / f"query-{img_name}.txt"
+        # --- STEP 2: Extract MegaLoc retrieval features ---
+        t0 = time.time()
+        single_retrieval = extract_features.main(
+            conf=retrieval_conf,
+            image_dir=single_query_dir,
+            export_dir=single_query_dir,
+            model=megaloc_model  # Pre-loaded model
+        )
+        breakdown['megaloc'] = time.time() - t0
         
-        # Calculate approximate camera intrinsics
-        # TODO: Use pycolmap.infer_camera_from_image function
+        # --- STEP 3: Find similar map images ---
+        t0 = time.time()
+        pairs_path = single_query_dir / "pairs.txt"
+        pairs_from_retrieval.main(
+            descriptors=single_retrieval,       # Query global descriptors
+            output=pairs_path,                  # Where to save pairs
+            num_matched=30,                     # Number of similar images
+            db_descriptors=map_retrieval_path   # Map global descriptors
+        )
+        breakdown['retrieval'] = time.time() - t0
+        
+        # --- STEP 4: Match features ---
+        t0 = time.time()
+        matches_path = match_features.main(
+            conf=matcher_conf,                  # SuperPoint+LightGlue ONNX TRT configuration
+            pairs=pairs_path,                   # Path to pairs file (query, db_image)
+            features=feature_conf["output"],   # Query features filename
+            export_dir=single_query_dir,        # Where to save matches
+            features_ref=map_features_path,     # Path to map features HDF5
+            overwrite=True,                     # Overwrite existing matches
+            model=matcher_model                 # Pre-loaded TRT model
+        )
+        breakdown['matching'] = time.time() - t0
+        
+        # --- STEP 5: Localize ---
+        t0 = time.time()
+        
+        # Create intrinsics file
         img_cv = cv2.imread(str(img_path))
         h, w = img_cv.shape[:2]
         focal = 0.7 * max(w, h)
         cx, cy = w / 2, h / 2
-        with open(single_query_path, 'w') as f:
+        intrinsics_path = single_query_dir / "intrinsics.txt"
+        with open(intrinsics_path, 'w') as f:
             f.write(f"{img_name} SIMPLE_PINHOLE {w} {h} {focal:.2f} {cx:.2f} {cy:.2f}\n")
         
-        # Localize this single query
-        single_results_path = query_outputs_dir / f"results-{img_name}.txt"
+        results_path = single_query_dir / "results.txt"
         localize_sfm.main(
-            reference_sfm=sfm_dir,          # Path to the reference SfM model
-            queries=single_query_path,      # Path to the single-query intrinsics file
-            retrieval=single_pairs_path,    # Path to pairs of (query_image, db_image) to consider
-            features=query_features,        # HDF5 file with query features
-            matches=single_matches,         # HDF5 file with query-map matches
-            results=single_results_path     # Where to save localization results
+            reference_sfm=sfm_dir,       # Path to the reference SfM model
+            queries=intrinsics_path,     # Path to query intrinsics file
+            retrieval=pairs_path,        # Path to pairs (query, db_image) to consider
+            features=single_features,    # HDF5 file with query features
+            matches=matches_path,        # HDF5 file with query-map matches
+            results=results_path         # Where to save localization results
         )
+        breakdown['localization'] = time.time() - t0
         
-        img_time = time.time() - img_start
-        per_image_timings[img_name] = img_time
-        print(f"    Time: {img_time:.2f}s")
+        # Total time for this image
+        img_total = time.time() - img_total_start
+        per_image_timings[img_name] = img_total
+        per_image_breakdown[img_name] = breakdown
         
-        # Parse this image's result
-        single_poses = parse_localization_results(single_results_path)
+        print(f"    SuperPoint: {breakdown['superpoint']:.2f}s | MegaLoc: {breakdown['megaloc']:.2f}s | "
+              f"Retrieval: {breakdown['retrieval']:.2f}s | Match: {breakdown['matching']:.2f}s | "
+              f"Localize: {breakdown['localization']:.2f}s")
+        print(f"    TOTAL: {img_total:.2f}s")
+        
+        # Parse results
+        single_poses = parse_localization_results(results_path)
         all_poses.update(single_poses)
-        
-        # Load logs if available
-        single_logs_path = str(single_results_path) + "_logs.pkl"
-        if Path(single_logs_path).exists():
-            with open(single_logs_path, 'rb') as f:
-                logs_data = pickle.load(f)
-                all_logs.update(logs_data.get('loc', {}))
     
-    # Write combined results of camera position in world coordinates
-    with open(results_path, 'w') as f:
-        for name, pose in all_poses.items():
-            qvec = pose['qvec']     # Quaternion 
-            tvec = pose['tvec']     # Position 
-            f.write(f"{name} {qvec[0]} {qvec[1]} {qvec[2]} {qvec[3]} {tvec[0]} {tvec[1]} {tvec[2]}\n")
+    timings['total'] = time.time() - total_start
     
-    total_time = time.time() - total_start
-    timings['total'] = total_time
+    # ============ TIMING SUMMARY ============
+    print("\n" + "="*50)
+    print("TIMING SUMMARY (True Single-Image Latency)")
+    print("="*50)
+    print(f"  Setup (one-time): {timings['setup']:.2f}s")
+    print(f"  ---------------------------------")
+    print(f"  Per-image FULL pipeline:")
     
-    # ============ PARSE AND DISPLAY RESULTS ============
+    # Calculate averages
+    avg_breakdown = {k: 0 for k in per_image_breakdown[list(per_image_breakdown.keys())[0]]}
+    for name, breakdown in per_image_breakdown.items():
+        print(f"    {name}:")
+        print(f"      SuperPoint: {breakdown['superpoint']:.2f}s")
+        print(f"      MegaLoc:    {breakdown['megaloc']:.2f}s")
+        print(f"      Retrieval:  {breakdown['retrieval']:.2f}s")
+        print(f"      Matching:   {breakdown['matching']:.2f}s")
+        print(f"      Localize:   {breakdown['localization']:.2f}s")
+        print(f"      TOTAL:      {per_image_timings[name]:.2f}s")
+        for k in avg_breakdown:
+            avg_breakdown[k] += breakdown[k]
+    
+    n_images = len(per_image_breakdown)
+    print(f"  ---------------------------------")
+    print(f"  AVERAGE per image:")
+    print(f"    SuperPoint: {avg_breakdown['superpoint']/n_images:.2f}s")
+    print(f"    MegaLoc:    {avg_breakdown['megaloc']/n_images:.2f}s")
+    print(f"    Retrieval:  {avg_breakdown['retrieval']/n_images:.2f}s")
+    print(f"    Matching:   {avg_breakdown['matching']/n_images:.2f}s")
+    print(f"    Localize:   {avg_breakdown['localization']/n_images:.2f}s")
+    avg_total = sum(per_image_timings.values()) / n_images
+    print(f"    TOTAL:      {avg_total:.2f}s/image")
+    print(f"  ---------------------------------")
+    print(f"  Total pipeline: {timings['total']:.2f}s")
+    
+    # ============ RESULTS ============
     print("\n" + "="*50)
     print("LOCALIZATION RESULTS")
     print("="*50)
     
-    # Use already parsed poses and logs
     query_poses = all_poses
-    detailed_logs = all_logs
-    
-    # Sort and display results
-    sorted_names = sorted(query_poses.keys())
-    
-    # Track successfully localized queries
-    localized_count = 0
-    
-    for idx, name in enumerate(sorted_names):
-        # Get pose
-        pose = query_poses[name]
-        
-        # Get camera center
+    for idx, (name, pose) in enumerate(sorted(query_poses.items())):
         c = pose["center"]
-        
-        # Get inference time for this image
-        img_time = per_image_timings.get(name, 0)
-        
-        # Print position with timing
-        print(f"\n  [{idx + 1}] {name}  ({img_time:.2f}s)")
+        print(f"\n  [{idx+1}] {name}")
         print(f"      Position: ({c[0]:.3f}, {c[1]:.3f}, {c[2]:.3f})")
-        
-        # Print detailed info if available
-        if name in detailed_logs:
-            log = detailed_logs[name]
-            
-            # Get matched database images
-            db_ids = log.get('db', [])
-            if db_ids:
-                # Get image names from model
-                matched_names = []
-                for db_id in db_ids[:5]:  # Show top 5
-                    if db_id in model.images:
-                        matched_names.append(model.images[db_id].name)
-                print(f"      Matched with: {', '.join(matched_names)}")
-                if len(db_ids) > 5:
-                    print(f"                    ... and {len(db_ids) - 5} more")
-            
-            # Get PnP result details
-            pnp_ret = log.get('PnP_ret', {})
-            if pnp_ret:
-                num_inliers = pnp_ret.get('num_inliers', 'N/A')
-                print(f"      Inliers: {num_inliers}")
-            
-            # Get number of matches
-            num_matches = log.get('num_matches', 0)
-            if num_matches:
-                print(f"      Total matches: {num_matches}")
-        
-        # Increment counter
-        localized_count += 1
-    
-    # Check for failed localizations
-    total_queries = len(query_images)
-    if localized_count < total_queries:
-        print(f"\n  Warning: {total_queries - localized_count} queries failed to localize")
-    
-    # ============ TIMING SUMMARY ============
-    print("\n" + "="*50)
-    print("TIMING SUMMARY")
-    print("="*50)
-    print(f"  Setup (load map, extract features, retrieval, pairs):")
-    print(f"    Load map:         {timings['load_map']:.2f}s")
-    print(f"    Extract features: {timings['extract_features']:.2f}s")
-    print(f"    Retrieval:        {timings['retrieval']:.2f}s")
-    print(f"    Pair finding:     {timings['pair_finding']:.2f}s")
-    print(f"  ---------------------------------")
-    print(f"  Per-image inference (match + localize):")
-    total_inference = sum(per_image_timings.values())
-    for name in sorted(per_image_timings.keys()):
-        print(f"    {name}: {per_image_timings[name]:.2f}s")
-    print(f"  ---------------------------------")
-    print(f"  Total inference:    {total_inference:.2f}s ({total_inference/len(query_images):.2f}s/image)")
-    print(f"  Total pipeline:     {timings['total']:.2f}s")
     
     # ============ CREATE VISUALIZATION ============
     print("\n" + "="*50)
     print("Creating visualization...")
     print("="*50)
     
-    # Path for HTML visualization
     viz_path = query_outputs_dir / "visualization.html"
-    
-    # Create and save visualization using shared vis.py
     fig = visualize_localization(
-        model=model,
+        model=colmap_model,
         query_poses=query_poses,
         output_path=viz_path,
         title=f"Localization: {map_name}"
     )
     show_figure(fig)
     
-    # Print output location
     print(f"\nVisualization saved to: {viz_path}")
     
-    # Return results for programmatic use
     return query_poses
 
 

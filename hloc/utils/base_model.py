@@ -2,7 +2,9 @@ import inspect
 import sys
 from abc import ABCMeta, abstractmethod
 from copy import copy
+from typing import Dict, Optional
 
+import torch
 from torch import nn
 
 
@@ -46,3 +48,22 @@ def dynamic_load(root, model):
     assert len(classes) == 1, classes
     return classes[0][1]
     # return getattr(module, 'Model')
+
+
+def load_model(module, conf: Dict, device: Optional[str] = None):
+    """
+    Load a model from a module (extractors or matchers).
+    
+    Args:
+        module: The module to load from (e.g., hloc.extractors, hloc.matchers)
+        conf: Configuration dict with 'model' key containing model config
+        device: Device to load model on ("cuda" or "cpu"). Auto-detects if None.
+    
+    Returns:
+        Loaded model in eval mode on the specified device.
+    """
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    Model = dynamic_load(module, conf["model"]["name"])
+    model = Model(conf["model"]).eval().to(device)
+    return model

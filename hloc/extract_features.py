@@ -14,7 +14,7 @@ import torch
 from tqdm import tqdm
 
 from . import extractors, logger
-from .utils.base_model import dynamic_load
+from .utils.base_model import dynamic_load, load_model
 from .utils.io import list_h5_names, read_image
 from .utils.parsers import parse_image_lists
 
@@ -125,6 +125,29 @@ confs = {
             "resize_max": 1024,
         },
     },
+    # ONNX-accelerated SuperPoint 
+    "superpoint_onnx": {
+        "output": "feats-superpoint-onnx-n2048-r1024",
+        "model": {
+            "name": "superpoint_onnx",
+            "max_num_keypoints": 2048,
+        },
+        "preprocessing": {
+            "grayscale": True,
+            "resize_max": 1024,
+        },
+    },
+    "superpoint_onnx_max": {
+        "output": "feats-superpoint-onnx-n4096-r1600",
+        "model": {
+            "name": "superpoint_onnx",
+            "max_num_keypoints": 4096,
+        },
+        "preprocessing": {
+            "grayscale": True,
+            "resize_max": 1600,
+        },
+    },
     # Global descriptors
     "dir": {
         "output": "global-feats-dir",
@@ -144,6 +167,16 @@ confs = {
     "megaloc": {
         "output": "global-feats-megaloc",
         "model": {"name": "megaloc"},
+        "preprocessing": {"resize_max": 1024},
+    },
+    # MegaLoc with ONNX/TensorRT acceleration (~3-5x faster)
+    "megaloc_onnx": {
+        "output": "global-feats-megaloc",  # Compatible output format
+        "model": {
+            "name": "megaloc_onnx",
+            "use_tensorrt": True,
+            "resize": 322,  # MegaLoc default eval size
+        },
         "preprocessing": {"resize_max": 1024},
     },
 }
@@ -229,6 +262,11 @@ class ImageDataset(torch.utils.data.Dataset):
         return len(self.names)
 
 
+def get_model(conf: Dict):
+    """Load a feature extraction model (can be passed to main() to avoid reloading)."""
+    return load_model(extractors, conf)
+
+
 @torch.no_grad()
 def main(
     conf: Dict,
@@ -238,6 +276,7 @@ def main(
     image_list: Optional[Union[Path, List[str]]] = None,
     feature_path: Optional[Path] = None,
     overwrite: bool = False,
+    model = None,  # Optional pre-loaded model to avoid reloading
 ) -> Path:
     logger.info(
         "Extracting local features with configuration:" f"\n{pprint.pformat(conf)}"
@@ -256,8 +295,8 @@ def main(
         return feature_path
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    Model = dynamic_load(extractors, conf["model"]["name"])
-    model = Model(conf["model"]).eval().to(device)
+    if model is None:
+        model = load_model(extractors, conf, device)
 
     loader = torch.utils.data.DataLoader(
         dataset, num_workers=1, shuffle=False, pin_memory=True

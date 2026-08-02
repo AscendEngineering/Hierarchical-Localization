@@ -11,7 +11,7 @@ import torch
 from tqdm import tqdm
 
 from . import logger, matchers
-from .utils.base_model import dynamic_load
+from .utils.base_model import dynamic_load, load_model
 from .utils.parsers import names_to_pair, names_to_pair_old, parse_retrieval
 
 """
@@ -85,6 +85,14 @@ confs = {
         "output": "matches-adalam",
         "model": {"name": "adalam"},
     },
+    # ONNX-accelerated LightGlue 
+    "superpoint_onnx+lightglue_onnx": {
+        "output": "matches-superpoint-lightglue-onnx",
+        "model": {
+            "name": "lightglue_onnx",
+            "features": "superpoint",
+        },
+    },
 }
 
 
@@ -152,6 +160,87 @@ def writer_fn(inp, match_path):
             grp.create_dataset("matching_scores0", data=scores)
 
 
+@torch.no_grad()
+def match_from_paths_fast(
+    conf: Dict,
+    pairs: List[Tuple[str, str]],
+    match_path: Path,
+    feature_path_q: Path,
+    feature_path_ref: Path,
+    model=None,
+) -> None:
+    """
+    Optimized matching for inference: pre-loads features into memory to avoid
+    repeated HDF5 I/O overhead. Much faster for single-query scenarios.
+    """
+    if len(pairs) == 0:
+        return
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if model is None:
+        model = load_model(matchers, conf, device)
+
+    # Pre-load ALL needed features into memory AND transfer to GPU once
+    query_names = set(p[0] for p in pairs)
+    ref_names = set(p[1] for p in pairs)
+    
+    query_features = {}
+    with h5py.File(feature_path_q, "r") as fd:
+        for name in query_names:
+            grp = fd[name]
+            query_features[name] = {
+                k: torch.from_numpy(v.__array__()).float().to(device) 
+                for k, v in grp.items() if k != "image_size"
+            }
+            query_features[name]["image_size"] = tuple(grp["image_size"])
+    
+    ref_features = {}
+    with h5py.File(feature_path_ref, "r") as fd:
+        for name in ref_names:
+            grp = fd[name]
+            ref_features[name] = {
+                k: torch.from_numpy(v.__array__()).float().to(device)
+                for k, v in grp.items() if k != "image_size"
+            }
+            ref_features[name]["image_size"] = tuple(grp["image_size"])
+
+    # Match all pairs (pure GPU, no transfers in loop)
+    match_path.parent.mkdir(exist_ok=True, parents=True)
+    results = []
+    
+    for name0, name1 in tqdm(pairs, smoothing=0.1):
+        # Build data dict from pre-loaded GPU features (no .to(device) needed)
+        q_feats = query_features[name0]
+        r_feats = ref_features[name1]
+        
+        data = {
+            f"{k}0": v.unsqueeze(0) for k, v in q_feats.items() if k != "image_size"
+        }
+        data.update({
+            f"{k}1": v.unsqueeze(0) for k, v in r_feats.items() if k != "image_size"
+        })
+        # Image tensors just for shape info (not used in ONNX matching)
+        data["image0"] = {"shape": (1, 1) + q_feats["image_size"][::-1]}
+        data["image1"] = {"shape": (1, 1) + r_feats["image_size"][::-1]}
+        
+        # Run matcher
+        pred = model(data)
+        pair_name = names_to_pair(name0, name1)
+        results.append((pair_name, pred))
+
+    # Write all results at once
+    with h5py.File(str(match_path), "a", libver="latest") as fd:
+        for pair_name, pred in results:
+            if pair_name in fd:
+                del fd[pair_name]
+            grp = fd.create_group(pair_name)
+            matches = pred["matches0"][0].cpu().short().numpy()
+            grp.create_dataset("matches0", data=matches)
+            if "matching_scores0" in pred:
+                scores = pred["matching_scores0"][0].cpu().half().numpy()
+                grp.create_dataset("matching_scores0", data=scores)
+
+
 def main(
     conf: Dict,
     pairs: Path,
@@ -160,6 +249,7 @@ def main(
     matches: Optional[Path] = None,
     features_ref: Optional[Path] = None,
     overwrite: bool = False,
+    model = None,
 ) -> Path:
     if isinstance(features, Path) or Path(features).exists():
         features_q = features
@@ -178,7 +268,7 @@ def main(
 
     if features_ref is None:
         features_ref = features_q
-    match_from_paths(conf, pairs, matches, features_q, features_ref, overwrite)
+    match_from_paths(conf, pairs, matches, features_q, features_ref, overwrite, model)
 
     return matches
 
@@ -206,6 +296,11 @@ def find_unique_new_pairs(pairs_all: List[Tuple[str]], match_path: Path = None):
     return pairs
 
 
+def get_model(conf: Dict, device: str = None):
+    """Pre-load matcher model for reuse across multiple match calls."""
+    return load_model(matchers, conf, device)
+
+
 @torch.no_grad()
 def match_from_paths(
     conf: Dict,
@@ -214,6 +309,7 @@ def match_from_paths(
     feature_path_q: Path,
     feature_path_ref: Path,
     overwrite: bool = False,
+    model = None,
 ) -> Path:
     logger.info(
         "Matching local features with configuration:" f"\n{pprint.pformat(conf)}"
@@ -233,9 +329,15 @@ def match_from_paths(
         logger.info("Skipping the matching.")
         return
 
+    # Use fast path when model is pre-loaded (inference mode)
+    # This pre-loads features into memory to avoid HDF5 I/O overhead
+    if model is not None:
+        match_from_paths_fast(conf, pairs, match_path, feature_path_q, feature_path_ref, model)
+        logger.info("Finished exporting matches.")
+        return
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    Model = dynamic_load(matchers, conf["model"]["name"])
-    model = Model(conf["model"]).eval().to(device)
+    model = load_model(matchers, conf, device)
 
     dataset = FeaturePairsDataset(pairs, feature_path_q, feature_path_ref)
     loader = torch.utils.data.DataLoader(
