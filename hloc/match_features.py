@@ -12,6 +12,7 @@ from tqdm import tqdm
 
 from . import logger, matchers
 from .utils.base_model import dynamic_load, load_model
+from .utils.cache import LRUCache
 from .utils.parsers import names_to_pair, names_to_pair_old, parse_retrieval
 
 """
@@ -168,10 +169,15 @@ def match_from_paths_fast(
     feature_path_q: Path,
     feature_path_ref: Path,
     model=None,
+    ref_cache: Optional[LRUCache] = None,
 ) -> None:
     """
     Optimized matching for inference: pre-loads features into memory to avoid
     repeated HDF5 I/O overhead. Much faster for single-query scenarios.
+    
+    Args:
+        ref_cache: Optional LRU cache for reference features. If provided,
+                   reference features are loaded through cache (for multi-query efficiency).
     """
     if len(pairs) == 0:
         return
@@ -180,7 +186,7 @@ def match_from_paths_fast(
     if model is None:
         model = load_model(matchers, conf, device)
 
-    # Pre-load ALL needed features into memory AND transfer to GPU once
+    # Pre-load query features
     query_names = set(p[0] for p in pairs)
     ref_names = set(p[1] for p in pairs)
     
@@ -194,15 +200,27 @@ def match_from_paths_fast(
             }
             query_features[name]["image_size"] = tuple(grp["image_size"])
     
-    ref_features = {}
-    with h5py.File(feature_path_ref, "r") as fd:
-        for name in ref_names:
-            grp = fd[name]
-            ref_features[name] = {
-                k: torch.from_numpy(v.__array__()).float().to(device)
-                for k, v in grp.items() if k != "image_size"
-            }
-            ref_features[name]["image_size"] = tuple(grp["image_size"])
+    # If a reference cache is provided, use it to load reference features
+    if ref_cache is not None:
+        def load_ref(name: str) -> Dict:
+            with h5py.File(feature_path_ref, "r") as fd:
+                grp = fd[name]
+                feats = {k: torch.from_numpy(v.__array__()).float()
+                         for k, v in grp.items() if k != "image_size"}
+                feats["image_size"] = tuple(grp["image_size"])
+            return feats
+        ref_features = {name: ref_cache.get(name, load_ref) for name in ref_names}
+    # Else load directly from HDF5
+    else:
+        ref_features = {}
+        with h5py.File(feature_path_ref, "r") as fd:
+            for name in ref_names:
+                grp = fd[name]
+                ref_features[name] = {
+                    k: torch.from_numpy(v.__array__()).float().to(device)
+                    for k, v in grp.items() if k != "image_size"
+                }
+                ref_features[name]["image_size"] = tuple(grp["image_size"])
 
     # Match all pairs (pure GPU, no transfers in loop)
     match_path.parent.mkdir(exist_ok=True, parents=True)
@@ -250,6 +268,7 @@ def main(
     features_ref: Optional[Path] = None,
     overwrite: bool = False,
     model = None,
+    ref_cache: Optional[LRUCache] = None,
 ) -> Path:
     if isinstance(features, Path) or Path(features).exists():
         features_q = features
@@ -268,7 +287,7 @@ def main(
 
     if features_ref is None:
         features_ref = features_q
-    match_from_paths(conf, pairs, matches, features_q, features_ref, overwrite, model)
+    match_from_paths(conf, pairs, matches, features_q, features_ref, overwrite, model, ref_cache)
 
     return matches
 
@@ -310,6 +329,7 @@ def match_from_paths(
     feature_path_ref: Path,
     overwrite: bool = False,
     model = None,
+    ref_cache: Optional[LRUCache] = None,
 ) -> Path:
     logger.info(
         "Matching local features with configuration:" f"\n{pprint.pformat(conf)}"
@@ -332,7 +352,7 @@ def match_from_paths(
     # Use fast path when model is pre-loaded (inference mode)
     # This pre-loads features into memory to avoid HDF5 I/O overhead
     if model is not None:
-        match_from_paths_fast(conf, pairs, match_path, feature_path_q, feature_path_ref, model)
+        match_from_paths_fast(conf, pairs, match_path, feature_path_q, feature_path_ref, model, ref_cache)
         logger.info("Finished exporting matches.")
         return
 

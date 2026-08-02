@@ -34,6 +34,7 @@ import cv2
 # hloc modules for feature extraction, matching, and localization
 from hloc import extract_features, match_features, localize_sfm
 from hloc import pairs_from_retrieval
+from hloc.utils.cache import LRUCache
 
 # Local visualization utilities
 from vis import visualize_localization, show_figure
@@ -265,6 +266,9 @@ def run_inference(map_name: str):
     print("  Loading LightGlue TensorRT matcher...")
     matcher_model = match_features.get_model(matcher_conf)
     
+    # Create LRU cache for map features (persists across queries)
+    ref_cache = LRUCache(max_items=200, device="cuda")
+    
     # Paths to pre-computed map features (compatible with both megaloc and megaloc_onnx)
     map_features_path = map_outputs_dir / f"{feature_conf['output']}.h5"
     map_retrieval_path = map_outputs_dir / f"{retrieval_conf['output']}.h5"
@@ -332,7 +336,8 @@ def run_inference(map_name: str):
             export_dir=single_query_dir,        # Where to save matches
             features_ref=map_features_path,     # Path to map features HDF5
             overwrite=True,                     # Overwrite existing matches
-            model=matcher_model                 # Pre-loaded TRT model
+            model=matcher_model,                # Pre-loaded TRT model
+            ref_cache=ref_cache,                # LRU cache for map features
         )
         breakdown['matching'] = time.time() - t0
         
@@ -415,6 +420,7 @@ def run_inference(map_name: str):
     avg_total = sum(per_image_timings.values()) / n_images
     print(f"    TOTAL:      {avg_total:.2f}s/image")
     print(f"  ---------------------------------")
+    print(f"  Cache stats: {ref_cache.stats()}")
     print(f"  Total pipeline: {timings['total']:.2f}s")
     
     # ============ RESULTS ============
