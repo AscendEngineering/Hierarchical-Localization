@@ -40,8 +40,14 @@ class SuperPointONNXWrapper:
     
     def _warmup(self):
         """Run dummy inference to compile CUDA kernels."""
-        dummy = np.random.rand(1, 768, 1024).astype(np.float32)
-        _ = self._model.extract(dummy)
+        # If model has extract_gpu method and IO Binding, use it for warmup
+        if hasattr(self._model, 'extract_gpu') and self._model.use_io_binding:
+            dummy = torch.rand(1, 1, 768, 1024, device='cuda')
+            _ = self._model.extract_gpu(dummy)
+        # Else, fallback to CPU path for warmup
+        else:
+            dummy = np.random.rand(1, 768, 1024).astype(np.float32)
+            _ = self._model.extract(dummy)
     
     def eval(self):
         return self
@@ -62,6 +68,42 @@ class SuperPointONNXWrapper:
             image = 0.299 * image[:, 0:1] + 0.587 * image[:, 1:2] + 0.114 * image[:, 2:3]
         
         device = data["image"].device
+        
+        # Use GPU path with IO Binding if available (faster)
+        if hasattr(self._model, 'extract_gpu') and device.type == 'cuda':
+            all_keypoints = []
+            all_scores = []
+            all_descriptors = []
+            
+            # For each image in the batch, extract features on GPU
+            for b in range(B):
+                kp, sc, desc = self._model.extract_gpu(image[b])
+                all_keypoints.append(kp)
+                all_scores.append(sc)
+                all_descriptors.append(desc)
+            
+            # Pad to max length
+            max_n = max(len(kp) for kp in all_keypoints) if all_keypoints else 0
+            
+            # Preallocate tensors for keypoints, scores, and descriptors
+            keypoints = torch.zeros((B, max_n, 2), dtype=torch.float32, device=device)
+            scores = torch.zeros((B, max_n), dtype=torch.float32, device=device)
+            descriptors = torch.zeros((B, max_n, 256), dtype=torch.float32, device=device)
+            
+            # Fill in the results for each image in the batch
+            for b in range(B):
+                n = len(all_keypoints[b])
+                keypoints[b, :n] = all_keypoints[b]
+                scores[b, :n] = all_scores[b]
+                descriptors[b, :n] = all_descriptors[b]
+            
+            return {
+                "keypoints": keypoints,
+                "scores": scores,
+                "descriptors": descriptors,
+            }
+        
+        # Fallback to CPU path
         all_keypoints = []
         all_scores = []
         all_descriptors = []
@@ -127,12 +169,21 @@ class LightGlueONNXWrapper:
     def _warmup(self):
         """Run dummy inference to compile CUDA kernels."""
         n_kpts = 500
-        dummy_kp0 = np.random.rand(n_kpts, 2).astype(np.float32) * 500
-        dummy_kp1 = np.random.rand(n_kpts, 2).astype(np.float32) * 500
-        dummy_desc0 = np.random.rand(n_kpts, self.desc_dim).astype(np.float32)
-        dummy_desc1 = np.random.rand(n_kpts, self.desc_dim).astype(np.float32)
-        _ = self._model.match(dummy_kp0, dummy_kp1, dummy_desc0, dummy_desc1,
-                              image_size0=(768, 1024), image_size1=(768, 1024))
+        # Use GPU path with IO Binding if available (warms up the right code path)
+        if hasattr(self._model, 'match_gpu') and getattr(self._model, 'use_io_binding', False):
+            dummy_kp0 = torch.rand(n_kpts, 2, device='cuda') * 500
+            dummy_kp1 = torch.rand(n_kpts, 2, device='cuda') * 500
+            dummy_desc0 = torch.rand(n_kpts, self.desc_dim, device='cuda')
+            dummy_desc1 = torch.rand(n_kpts, self.desc_dim, device='cuda')
+            _ = self._model.match_gpu(dummy_kp0, dummy_kp1, dummy_desc0, dummy_desc1,
+                                      image_size0=(768, 1024), image_size1=(768, 1024))
+        else:
+            dummy_kp0 = np.random.rand(n_kpts, 2).astype(np.float32) * 500
+            dummy_kp1 = np.random.rand(n_kpts, 2).astype(np.float32) * 500
+            dummy_desc0 = np.random.rand(n_kpts, self.desc_dim).astype(np.float32)
+            dummy_desc1 = np.random.rand(n_kpts, self.desc_dim).astype(np.float32)
+            _ = self._model.match(dummy_kp0, dummy_kp1, dummy_desc0, dummy_desc1,
+                                  image_size0=(768, 1024), image_size1=(768, 1024))
     
     def eval(self):
         return self
@@ -168,19 +219,36 @@ class LightGlueONNXWrapper:
         all_scores0 = []
         all_scores1 = []
         
+        # Use GPU path with IO Binding if available (faster)
+        use_gpu = (
+            hasattr(self._model, 'match_gpu') and 
+            getattr(self._model, 'use_io_binding', False) and 
+            device.type == 'cuda'
+        )
+        
         for b in range(B):
-            kp0_np = kp0[b].cpu().numpy().astype(np.float32)
-            kp1_np = kp1[b].cpu().numpy().astype(np.float32)
-            desc0_np = desc0[b].cpu().numpy().astype(np.float32)
-            desc1_np = desc1[b].cpu().numpy().astype(np.float32)
-            
             img_size0 = (shape0[-2], shape0[-1]) if shape0 is not None else None
             img_size1 = (shape1[-2], shape1[-1]) if shape1 is not None else None
             
-            matches, scores = self._model.match(
-                kp0_np, kp1_np, desc0_np, desc1_np,
-                image_size0=img_size0, image_size1=img_size1,
-            )
+            # If GPU path is available, use it for matching
+            if use_gpu:
+                # GPU path avoids CPU copies
+                matches, scores = self._model.match_gpu(
+                    kp0[b], kp1[b], desc0[b], desc1[b],
+                    image_size0=img_size0, image_size1=img_size1,
+                )
+            # Else, fallback to CPU path
+            else:
+                # Convert tensors to numpy for CPU matching
+                kp0_np = kp0[b].cpu().numpy().astype(np.float32)
+                kp1_np = kp1[b].cpu().numpy().astype(np.float32)
+                desc0_np = desc0[b].cpu().numpy().astype(np.float32)
+                desc1_np = desc1[b].cpu().numpy().astype(np.float32)
+                
+                matches, scores = self._model.match(
+                    kp0_np, kp1_np, desc0_np, desc1_np,
+                    image_size0=img_size0, image_size1=img_size1,
+                )
             
             matches0 = np.full(N0, -1, dtype=np.int64)
             matches1 = np.full(N1, -1, dtype=np.int64)

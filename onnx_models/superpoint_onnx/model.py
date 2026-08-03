@@ -15,6 +15,13 @@ from ..utils import ort, get_onnx_providers, create_session
 # Model directory for this module
 MODELS_DIR = Path(__file__).parent / "models"
 
+# Try to import torch for IO Binding support
+try:
+    import torch
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
+
 
 class SuperPointONNX:
     """
@@ -45,6 +52,7 @@ class SuperPointONNX:
         
         self.max_keypoints = max_num_keypoints
         self.detection_threshold = detection_threshold
+        self.device = device
         
         # Find model
         if model_path is None:
@@ -61,6 +69,13 @@ class SuperPointONNX:
         self.session = create_session(model_path, providers, provider_options)
         self.provider = self.session.get_providers()[0]
         print(f"  Provider: {self.provider}")
+        
+        # If IO Binding is available (CUDA only)
+        self.use_io_binding = (
+            HAS_TORCH and 
+            device == "cuda" and 
+            "CUDA" in self.provider
+        )
     
     def extract(self, image: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
@@ -106,6 +121,84 @@ class SuperPointONNX:
             desc = desc[indices]
         
         return kp, sc, desc
+    
+    def extract_gpu(self, image: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        """
+        Extract features from a GPU tensor using IO Binding (faster).
+        
+        Args:
+            image: Grayscale float32 tensor on CUDA, shape [1, 1, H, W]
+        
+        Returns:
+            keypoints: [N, 2] tensor of (x, y) coordinates on GPU
+            scores: [N] tensor of detection scores on GPU
+            descriptors: [N, 256] tensor of descriptors on GPU
+        """
+        # If IO Binding is not available
+        if not self.use_io_binding:
+            # Fallback to CPU path
+            kp, sc, desc = self.extract(image.cpu().numpy())
+            return (
+                torch.from_numpy(kp).to(image.device),
+                torch.from_numpy(sc).to(image.device),
+                torch.from_numpy(desc).to(image.device),
+            )
+        
+        # Ensure contiguous and correct shape
+        if image.ndim == 3:
+            image = image.unsqueeze(0)
+        image = image.contiguous()
+        
+        # Create IO binding
+        io_binding = self.session.io_binding()
+        
+        # Bind input directly from GPU tensor (no copy)
+        io_binding.bind_input(
+            name='image',
+            device_type='cuda',
+            device_id=0,
+            element_type=np.float32,
+            shape=tuple(image.shape),
+            buffer_ptr=image.data_ptr()
+        )
+        
+        # Bind outputs, let ONNX RT allocate them
+        io_binding.bind_output('keypoints', device_type='cpu')
+        io_binding.bind_output('scores', device_type='cpu')
+        io_binding.bind_output('descriptors', device_type='cpu')
+        
+        # Run inference
+        self.session.run_with_iobinding(io_binding)
+        
+        # Get outputs (on CPU as numpy)
+        outputs = io_binding.copy_outputs_to_cpu()
+        keypoints, scores, descriptors = outputs
+        
+        # Remove batch dimension
+        kp = keypoints[0].astype(np.float32)
+        sc = scores[0].astype(np.float32)
+        desc = descriptors[0].astype(np.float32)
+        
+        # Filter by threshold
+        mask = sc > self.detection_threshold
+        kp = kp[mask]
+        sc = sc[mask]
+        desc = desc[mask]
+        
+        # Keep top-K by score
+        if len(kp) > self.max_keypoints:
+            indices = np.argsort(sc)[::-1][:self.max_keypoints]
+            kp = kp[indices]
+            sc = sc[indices]
+            desc = desc[indices]
+        
+        # Convert to torch and move to GPU
+        device = image.device
+        return (
+            torch.from_numpy(kp).to(device),
+            torch.from_numpy(sc).to(device),
+            torch.from_numpy(desc).to(device),
+        )
     
     def __call__(self, image: np.ndarray) -> Dict[str, np.ndarray]:
         """Extract features, returning dict format."""
