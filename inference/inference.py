@@ -361,7 +361,8 @@ def run_inference(map_name: str):
             retrieval=pairs_path,        # Path to pairs (query, db_image) to consider
             features=single_features,    # HDF5 file with query features
             matches=matches_path,        # HDF5 file with query-map matches
-            results=results_path         # Where to save localization results
+            results=results_path,        # Where to save localization results
+            covisibility_clustering=True,     # Cluster map images to reduce PnP candidates
         )
         breakdown['localization'] = time.time() - t0
         
