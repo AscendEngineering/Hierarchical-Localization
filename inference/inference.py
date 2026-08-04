@@ -237,12 +237,13 @@ def run_inference(map_name: str):
     colmap_model = pycolmap.Reconstruction(sfm_dir)
     print(f"  Map: {colmap_model.num_reg_images()} images, {colmap_model.num_points3D()} points")
     
-    # Configuration for feature extraction
+    # Configuration for feature extraction (TensorRT accelerated)
     feature_conf = {
         "output": "feats-superpoint-n4096-r1024",
         "model": {
             "name": "superpoint_onnx",
             "max_num_keypoints": 4096,
+            "use_tensorrt": True,
         },
         "preprocessing": {
             "grayscale": True,
@@ -257,7 +258,7 @@ def run_inference(map_name: str):
     matcher_conf = match_features.confs["superpoint_onnx+lightglue_onnx"]
     
     # Pre-load all models (one-time)
-    print("  Loading SuperPoint ONNX...")
+    print("  Loading SuperPoint ONNX with TensorRT...")
     superpoint_model = extract_features.get_model(feature_conf)
     
     print("  Loading MegaLoc ONNX with TensorRT...")

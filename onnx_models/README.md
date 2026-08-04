@@ -4,19 +4,19 @@ Accelerated visual localization models using ONNX Runtime with TensorRT support.
 
 ## Models
 
-| Model | Purpose | Input | Output | Speedup |
-|-------|---------|-------|--------|---------|
-| SuperPoint | Keypoint detection | Grayscale image | Keypoints, scores, 256-dim descriptors | ~2x |
-| LightGlue | Feature matching | Two sets of keypoints + descriptors | Match indices and scores | ~3x |
-| MegaLoc | Global descriptors | RGB image | 8448-dim descriptor | ~8x |
+| Model | Purpose | Input | Output | TensorRT | Precision |
+|-------|---------|-------|--------|----------|-----------|
+| SuperPoint | Keypoint detection | Grayscale image | Keypoints, scores, 256-dim descriptors | ✓ | FP16 |
+| LightGlue | Feature matching | Two sets of keypoints + descriptors | Match indices and scores | ✓ | FP16 |
+| MegaLoc | Global descriptors | RGB image | 8448-dim descriptor | ✓ | FP32 |
 
 ## Quick Start
 
 ```python
 from onnx_models import SuperPointONNX, LightGlueONNX, MegaLocONNX
 
-# Feature extraction
-sp = SuperPointONNX()
+# Feature extraction (with TensorRT)
+sp = SuperPointONNX(use_tensorrt=True)
 keypoints, scores, descriptors = sp.extract(grayscale_image)
 
 # Feature matching
@@ -24,7 +24,7 @@ lg = LightGlueONNX()
 matches, scores = lg.match(kp0, kp1, desc0, desc1)
 
 # Global descriptor
-ml = MegaLocONNX()
+ml = MegaLocONNX(use_tensorrt=True)
 descriptor = ml.extract(rgb_image)
 ```
 
@@ -37,6 +37,20 @@ python -m onnx_models.setup
 ```
 
 This downloads SuperPoint and LightGlue, and exports MegaLoc from PyTorch.
+
+### Pre-build TensorRT Engines
+
+TensorRT engine compilation requires ~6GB GPU memory. Pre-build them once to avoid OOM during inference:
+
+```bash
+# Inside Docker container (after running ./scripts/launch_docker.sh):
+python3 onnx_models/build_trt_engines.py
+
+# Or as a one-liner from the host:
+docker run --gpus all --rm -v "$(pwd)":/app -w /app hloc:latest python3 onnx_models/build_trt_engines.py
+```
+
+This caches engines in each model's `models/.trt_cache/` directory. Subsequent runs load instantly.
 
 If you don't have PyTorch/CUDA:
 
@@ -59,7 +73,8 @@ onnx_models/
 ├── __init__.py          # Public API
 ├── utils.py             # Shared utilities
 ├── hloc_wrappers.py     # hloc integration
-├── setup.py             # Root setup
+├── setup.py             # Download/export all models
+├── build_trt_engines.py # Pre-build TensorRT engines
 │
 ├── superpoint_onnx/
 │   ├── __init__.py
@@ -92,7 +107,7 @@ These models integrate with hloc through wrappers in `hloc/extractors/` and `hlo
 # In extract_features.py
 confs["superpoint_onnx"] = {
     "output": "feats-superpoint-onnx",
-    "model": {"name": "superpoint_onnx", "max_num_keypoints": 4096},
+    "model": {"name": "superpoint_onnx", "max_num_keypoints": 4096, "use_tensorrt": True},
     "preprocessing": {"grayscale": True, "resize_max": 1024},
 }
 
@@ -128,10 +143,17 @@ print(onnxruntime.get_available_providers())
 
 ## Performance Notes
 
-TensorRT provides the best performance but has caveats:
-- First inference is slow (~30s) while building the engine
-- Engine is cached in `.trt_cache/` for subsequent runs
-- Some models need FP32 (FP16 can cause numerical issues)
+**TensorRT Acceleration:**
+- Provides 2-8x speedup over CUDA execution provider
+- First run compiles the engine (~30s), subsequent runs load from cache
+- LightGlue requires ~6GB GPU memory during engine compilation
+- Run `build_trt_engines.py` with an empty GPU to avoid OOM
 
-For MegaLoc specifically, TensorRT FP16 is disabled due to NaN outputs in the
-DINOv2 backbone. This still provides ~8x speedup over PyTorch.
+**Precision:**
+- SuperPoint and LightGlue use FP16 for speed
+- MegaLoc uses FP32 (DINOv2 produces NaN with FP16)
+
+**Memory:**
+- Engine compilation is memory-intensive but transient
+- Runtime usage is much lower than compilation
+- Delete `.trt_cache/` directories to force engine rebuild

@@ -131,7 +131,8 @@ class LightGlueONNX:
                 "trt_context_memory_sharing_enable": True,  # Share memory between subgraphs
                 "trt_timing_cache_enable": True,            # Cache kernel timings for faster builds
                 "trt_timing_cache_path": str(cache_dir),
-                "trt_builder_optimization_level": 5,        # Max optimization
+                # Level 3 avoids Myelin stream capture conflicts
+                "trt_builder_optimization_level": 3,
             },
             {"device_id": 0},
             {},

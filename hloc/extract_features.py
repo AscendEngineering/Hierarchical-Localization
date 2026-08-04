@@ -131,6 +131,7 @@ confs = {
         "model": {
             "name": "superpoint_onnx",
             "max_num_keypoints": 2048,
+            "use_tensorrt": True,
         },
         "preprocessing": {
             "grayscale": True,
@@ -142,6 +143,7 @@ confs = {
         "model": {
             "name": "superpoint_onnx",
             "max_num_keypoints": 4096,
+            "use_tensorrt": True,
         },
         "preprocessing": {
             "grayscale": True,

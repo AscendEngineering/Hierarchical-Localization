@@ -28,7 +28,7 @@ class SuperPointONNX:
     SuperPoint feature extractor using ONNX Runtime.
     
     Extracts keypoints, scores, and 256-dim descriptors from grayscale images.
-    Provides ~2x speedup over PyTorch on GPU.
+    Provides ~2x speedup over PyTorch on GPU, ~3x with TensorRT.
     """
     
     MODEL_NAME = "superpoint_onnx.onnx"
@@ -39,6 +39,7 @@ class SuperPointONNX:
         max_num_keypoints: int = 2048,
         detection_threshold: float = 0.0005,
         device: str = "cuda",
+        use_tensorrt: bool = False,
     ):
         """
         Args:
@@ -46,6 +47,7 @@ class SuperPointONNX:
             max_num_keypoints: Maximum keypoints to return.
             detection_threshold: Minimum keypoint score.
             device: "cuda" or "cpu"
+            use_tensorrt: Enable TensorRT acceleration (FP16)
         """
         if ort is None:
             raise ImportError("onnxruntime not installed. Run: pip install onnxruntime-gpu")
@@ -62,8 +64,23 @@ class SuperPointONNX:
         if not model_path.exists():
             raise FileNotFoundError(f"Model not found: {model_path}")
         
-        # Create session with CUDA provider
-        providers, provider_options = get_onnx_providers(device=device, use_tensorrt=False)
+        # Create session with TRT or CUDA provider
+        trt_cache = MODELS_DIR / ".trt_cache" if use_tensorrt else None
+        providers, provider_options = get_onnx_providers(
+            device=device,
+            use_tensorrt=use_tensorrt,
+            trt_cache_dir=trt_cache,
+            trt_fp16=True,  # SuperPoint works fine with FP16
+        )
+        
+        # Add TRT profile shapes for dynamic input (image size varies)
+        if use_tensorrt and provider_options and "TensorrtExecutionProvider" in providers:
+            # Image input: [1, 1, H, W] - grayscale images up to 1024x1024
+            provider_options[0].update({
+                "trt_profile_min_shapes": "image:1x1x256x256",
+                "trt_profile_opt_shapes": "image:1x1x768x1024",
+                "trt_profile_max_shapes": "image:1x1x1024x1024",
+            })
         
         print(f"Loading SuperPoint ONNX from {model_path}...")
         self.session = create_session(model_path, providers, provider_options)
