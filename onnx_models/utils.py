@@ -58,6 +58,8 @@ def get_onnx_providers(
                 "trt_timing_cache_enable": True,
                 "trt_timing_cache_path": str(trt_cache_dir),
                 "trt_builder_optimization_level": 5,
+                # NOTE: trt_cuda_graph_enable causes issues with some models
+                "trt_context_memory_sharing_enable": True,  # Share memory between subgraphs
             })
         
         if "CUDAExecutionProvider" in available:

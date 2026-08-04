@@ -127,6 +127,11 @@ class LightGlueONNX:
                 "trt_profile_min_shapes": min_shapes,
                 "trt_profile_max_shapes": max_shapes,
                 "trt_profile_opt_shapes": opt_shapes,
+                # NOTE: trt_cuda_graph_enable=True causes OOM with dynamic shapes
+                "trt_context_memory_sharing_enable": True,  # Share memory between subgraphs
+                "trt_timing_cache_enable": True,            # Cache kernel timings for faster builds
+                "trt_timing_cache_path": str(cache_dir),
+                "trt_builder_optimization_level": 5,        # Max optimization
             },
             {"device_id": 0},
             {},

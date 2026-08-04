@@ -102,7 +102,13 @@ class MegaLocONNX:
         image = np.ascontiguousarray(image)
         
         # Run inference
-        outputs = self.session.run(["descriptors"], {"images": image})
+        outputs = self.session.run(None, {"images": image})
+        if not outputs:
+            raise RuntimeError(
+                f"MegaLoc ONNX session returned empty outputs. "
+                f"Active provider: {self.active_provider}. "
+                f"This may indicate a TensorRT fallback failure."
+            )
         return outputs[0]
     
     def warmup(self, n_iters: int = 3):
@@ -110,7 +116,7 @@ class MegaLocONNX:
         print(f"Warming up MegaLoc ONNX ({n_iters} iterations)...")
         dummy = np.random.randn(1, 3, 322, 322).astype(np.float32)
         for _ in range(n_iters):
-            self.session.run(["descriptors"], {"images": dummy})
+            self.session.run(None, {"images": dummy})
         print("  Warmup complete!")
     
     def __call__(self, image: np.ndarray, **kwargs) -> np.ndarray:
