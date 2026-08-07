@@ -9,7 +9,7 @@ import pycolmap
 from tqdm import tqdm
 
 from . import logger
-from .utils.io import get_keypoints, get_matches, write_poses
+from .utils.io import get_keypoints, get_matches, write_poses, get_matches_batch
 from .utils.parsers import parse_image_lists, parse_retrieval
 
 
@@ -82,6 +82,10 @@ def pose_from_cluster(
     kpq = get_keypoints(features_path, qname)
     kpq += 0.5  # COLMAP coordinates
 
+    # Batch load all matches in one HDF5 open (avoids 30x file open/close)
+    db_names = [localizer.reconstruction.images[db_id].name for db_id in db_ids]
+    all_matches = get_matches_batch(matches_path, qname, db_names)
+
     kp_idx_to_3D = defaultdict(list)
     kp_idx_to_3D_to_db = defaultdict(lambda: defaultdict(list))
     num_matches = 0
@@ -90,11 +94,17 @@ def pose_from_cluster(
         if image.num_points3D == 0:
             logger.debug(f"No 3D points found for {image.name}.")
             continue
+        
+        # If no matches found for this pair, skip
+        if image.name not in all_matches:
+            continue
+            
         points3D_ids = np.array(
             [p.point3D_id if p.has_point3D() else -1 for p in image.points2D]
         )
 
-        matches, _ = get_matches(matches_path, qname, image.name)
+        # matches, _ = get_matches(matches_path, qname, image.name)  # Old: opens HDF5 each time
+        matches, _ = all_matches[image.name]  # New: fast dict lookup from batch load
         matches = matches[points3D_ids[matches[:, 1]] != -1]
         num_matches += len(matches)
         for idx, m in matches:

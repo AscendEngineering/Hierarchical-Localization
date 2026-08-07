@@ -79,6 +79,48 @@ def get_matches(path: Path, name0: str, name1: str) -> Tuple[np.ndarray]:
     return matches, scores
 
 
+def get_matches_batch(
+    path: Path, query_name: str, db_names: list
+) -> dict:
+    """
+    Load all matches for a query against multiple db images in one HDF5 open.
+    
+    Avoids the overhead of opening/closing the file for each pair.
+    
+    Args:
+        path: Path to matches HDF5 file
+        query_name: Name of the query image
+        db_names: List of database image names to load matches for
+        
+    Returns:
+        Dict mapping db_name -> (matches, scores) tuples
+        Missing pairs are silently skipped.
+    """
+    results = {}
+    with h5py.File(str(path), "r", libver="latest") as hfile:
+        # For every database image
+        for db_name in db_names:
+            try:
+                # Try to find the pair in the HDF5 file
+                pair, reverse = find_pair(hfile, query_name, db_name)
+                matches = hfile[pair]["matches0"].__array__()
+                scores = hfile[pair]["matching_scores0"].__array__()
+                
+                # Filter valid matches
+                idx = np.where(matches != -1)[0]
+                matches = np.stack([idx, matches[idx]], -1)
+                
+                # If the pair was stored in reverse order, flip the matches
+                if reverse: matches = np.flip(matches, -1)
+                scores = scores[idx]
+                
+                results[db_name] = (matches, scores)
+            except ValueError:
+                # Pair not found, skip
+                continue
+    return results
+
+
 def write_poses(
     poses: Mapping[str, pycolmap.Rigid3d], path: str, prepend_camera_name: bool
 ):

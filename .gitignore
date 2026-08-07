@@ -30,7 +30,3 @@ onnx_models/megaloc_onnx/models/*.onnx.data
 # TensorRT cache (GPU-specific, auto-generated)
 onnx_models/*/models/.trt_cache/
 .trt_cache/
-
-ISSUES.md
-KNOWLEDGE.md
-TODO.md
