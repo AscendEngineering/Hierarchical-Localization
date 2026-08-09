@@ -193,13 +193,15 @@ def build_map(video_name: str):
     
     # SuperPoint ONNX configuration for TensorRT-accelerated pipeline:
     # - Grayscale images (SuperPoint requirement)
-    # - 4096 keypoints for good coverage
+    # - 2048 keypoints with force_num_keypoints (topk, like fabio-sim)
+    # - This ensures EXACTLY 2048 keypoints per image for batched LightGlue
     # - 1024px max resolution
     feature_conf = {
-        "output": "feats-superpoint-n4096-r1024",
+        "output": "feats-superpoint-n2048-r1024",
         "model": {
             "name": "superpoint_onnx",
-            "max_num_keypoints": 4096,
+            "max_num_keypoints": 2048,
+            "force_num_keypoints": True,  # Always return exactly max_num_keypoints (topk)
         },
         "preprocessing": {
             "grayscale": True,

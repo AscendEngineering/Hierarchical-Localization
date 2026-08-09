@@ -142,11 +142,14 @@ def run_inference(map_name: str):
     
     # Configuration for feature extraction
     # NOTE: SuperPoint uses ScatterND with reduction attribute, unsupported by TensorRT
+    # force_num_keypoints=True uses topk (like fabio-sim) instead of threshold filtering
+    # This ensures exactly N keypoints for batched LightGlue inference
     feature_conf = {
-        "output": "feats-superpoint-n4096-r1024",
+        "output": "feats-superpoint-n2048-r1024",
         "model": {
             "name": "superpoint_onnx",
-            "max_num_keypoints": 4096,
+            "max_num_keypoints": 2048,
+            "force_num_keypoints": True,  # Always return exactly max_num_keypoints (topk)
             "use_tensorrt": False,  # ScatterND reduction not supported by TRT
         },
         "preprocessing": {
@@ -154,10 +157,10 @@ def run_inference(map_name: str):
             "resize_max": 1024,
         },
     }
-    
+
     # Configuration for retrieval (ONNX/TensorRT accelerated)
     retrieval_conf = extract_features.confs["megaloc_onnx"]
-    
+
     # Configuration for matching
     matcher_conf = match_features.confs["superpoint_onnx+lightglue_onnx"]
     

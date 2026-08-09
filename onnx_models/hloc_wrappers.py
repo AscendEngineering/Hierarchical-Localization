@@ -25,6 +25,7 @@ class SuperPointONNXWrapper:
         "nms_radius": 4,
         "device": "cuda",
         "use_tensorrt": False,
+        "force_num_keypoints": False,
     }
     required_inputs = ["image"]
     
@@ -36,6 +37,7 @@ class SuperPointONNXWrapper:
             detection_threshold=self.conf.get("detection_threshold", 0.0005),
             device=self.conf.get("device", "cuda"),
             use_tensorrt=self.conf.get("use_tensorrt", False),
+            force_num_keypoints=self.conf.get("force_num_keypoints", False),
         )
         # Warmup to trigger CUDA kernel compilation
         self._warmup()

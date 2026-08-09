@@ -40,6 +40,7 @@ class SuperPointONNX:
         detection_threshold: float = 0.0005,
         device: str = "cuda",
         use_tensorrt: bool = False,
+        force_num_keypoints: bool = False,
     ):
         """
         Args:
@@ -48,12 +49,16 @@ class SuperPointONNX:
             detection_threshold: Minimum keypoint score.
             device: "cuda" or "cpu"
             use_tensorrt: Enable TensorRT acceleration (FP16)
+            force_num_keypoints: If True, always return exactly max_num_keypoints
+                                 (top-K by score, no threshold filtering).
+                                 Required for batched LightGlue inference.
         """
         if ort is None:
             raise ImportError("onnxruntime not installed. Run: pip install onnxruntime-gpu")
         
         self.max_keypoints = max_num_keypoints
         self.detection_threshold = detection_threshold
+        self.force_num_keypoints = force_num_keypoints
         self.device = device
         
         # Find model
@@ -94,6 +99,34 @@ class SuperPointONNX:
             "CUDA" in self.provider
         )
     
+    def _filter_keypoints(
+        self, kp: np.ndarray, sc: np.ndarray, desc: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Filter and select keypoints based on configuration.
+        
+        If force_num_keypoints: return exactly max_keypoints (top-K by score).
+        Otherwise: threshold filter, then truncate to max_keypoints.
+        """
+        # If force_num_keypoints is True, always return exactly max_keypoints (top-K by score)
+        if self.force_num_keypoints:
+            # Always return exactly max_keypoints (top-K by score)
+            # Required for batched LightGlue inference
+            indices = np.argsort(sc)[::-1][:self.max_keypoints]
+            return kp[indices], sc[indices], desc[indices]
+        # Else, filter by detection threshold and truncate to max_keypoints
+        else:
+            # Filter by detection threshold
+            mask = sc > self.detection_threshold
+            kp, sc, desc = kp[mask], sc[mask], desc[mask]
+            
+            # Truncate to max_keypoints if necessary
+            if len(kp) > self.max_keypoints:
+                indices = np.argsort(sc)[::-1][:self.max_keypoints]
+                kp, sc, desc = kp[indices], sc[indices], desc[indices]
+            
+            return kp, sc, desc
+    
     def extract(self, image: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Extract features from a grayscale image.
@@ -124,20 +157,8 @@ class SuperPointONNX:
         sc = scores[0].astype(np.float32)
         desc = descriptors[0].astype(np.float32)
         
-        # Filter by threshold
-        mask = sc > self.detection_threshold
-        kp = kp[mask]
-        sc = sc[mask]
-        desc = desc[mask]
-        
-        # Keep top-K by score
-        if len(kp) > self.max_keypoints:
-            indices = np.argsort(sc)[::-1][:self.max_keypoints]
-            kp = kp[indices]
-            sc = sc[indices]
-            desc = desc[indices]
-        
-        return kp, sc, desc
+        # Filter keypoints and return
+        return self._filter_keypoints(kp, sc, desc)
     
     def extract_gpu(self, image: "torch.Tensor") -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
         """
@@ -195,19 +216,9 @@ class SuperPointONNX:
         kp = keypoints[0].astype(np.float32)
         sc = scores[0].astype(np.float32)
         desc = descriptors[0].astype(np.float32)
-        
-        # Filter by threshold
-        mask = sc > self.detection_threshold
-        kp = kp[mask]
-        sc = sc[mask]
-        desc = desc[mask]
-        
-        # Keep top-K by score
-        if len(kp) > self.max_keypoints:
-            indices = np.argsort(sc)[::-1][:self.max_keypoints]
-            kp = kp[indices]
-            sc = sc[indices]
-            desc = desc[indices]
+
+        # Filter keypoints 
+        kp, sc, desc = self._filter_keypoints(kp, sc, desc)
         
         # Convert to torch and move to GPU
         device = image.device
