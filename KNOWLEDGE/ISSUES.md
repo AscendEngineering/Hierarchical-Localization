@@ -1,6 +1,6 @@
 # ONNX Accelerated Inference - Issues & Solutions
 
-**Date:** 2026-08-01 (Updated: 2026-08-04)
+**Date:** 2026-08-01 (Updated: 2026-08-09)
 
 ---
 
@@ -596,6 +596,60 @@ features = cache.get(name, lambda n: load_from_hdf5(n))
 
 First query: 85 misses (loads from disk)
 Subsequent queries: 90%+ hit rate (no disk I/O)
+
+---
+
+## Problem 15: SuperPoint/MegaLoc Cannot Use TensorRT (ScatterND Limitation)
+
+### Issue
+When TensorRT 10.7.0 is properly installed, SuperPoint and MegaLoc fail to load with TensorRT EP:
+```
+[ERROR] In node 87 with name: /ScatterND and operator: ScatterND (importScatterND): 
+UNSUPPORTED_NODE_ATTR: Assertion failed: !attrs.count("reduction"): 
+Attribute reduction is not supported.
+```
+
+### Root Cause
+Both SuperPoint and MegaLoc (DINOv2-based) use `ScatterND` with a `reduction` attribute in their ONNX exports. TensorRT's ONNX parser does not support this operator attribute, even when `reduction='none'`.
+
+This is a known TensorRT limitation: [GitHub Issue #4425](https://github.com/NVIDIA/TensorRT/issues/4425)
+
+### Why It "Worked" Before
+With TensorRT 11.2 (incompatible with ORT 1.28), the TensorRT EP **failed to load entirely** (`libnvinfer.so.10: cannot open shared object file`). ORT silently fell back to CUDA EP for all models.
+
+Once TensorRT 10.7.0 was installed (compatible), the TensorRT EP loaded successfully and **actually tried** to parse the models - exposing the `ScatterND` limitation.
+
+### Solution
+Explicitly disable TensorRT for SuperPoint and MegaLoc:
+
+```python
+# inference.py - SuperPoint config
+feature_conf = {
+    "model": {
+        "name": "superpoint_onnx",
+        "use_tensorrt": False,  # ScatterND reduction not supported by TRT
+    },
+}
+
+# extract_features.py - MegaLoc config  
+"megaloc_onnx": {
+    "model": {
+        "name": "megaloc_onnx",
+        "use_tensorrt": False,  # ScatterND reduction not supported by TRT
+    },
+}
+```
+
+LightGlue continues to use TensorRT (the `.trt.onnx` models from LightGlue-ONNX are specifically exported to avoid unsupported ops).
+
+### Performance Impact
+| Model | CUDA EP | TensorRT EP | Notes |
+|-------|---------|-------------|-------|
+| SuperPoint | ~4ms | N/A | TRT unsupported |
+| MegaLoc | ~12ms | N/A | TRT unsupported |
+| LightGlue | ~15ms | ~8ms | **TRT works, 2x faster** |
+
+**Status:** ✓ Fixed - CUDA EP used for SuperPoint/MegaLoc, TensorRT for LightGlue
 
 ---
 

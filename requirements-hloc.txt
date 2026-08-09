@@ -1,0 +1,53 @@
+# =============================================================================
+# Pinned dependencies for hloc Docker image (2026-08-09)
+# =============================================================================
+# All versions extracted from working hloc:latest image for reproducibility.
+# Do not change these without testing the full inference pipeline.
+#
+# TensorRT Compatibility Notes:
+# - onnxruntime-gpu 1.28 requires TensorRT 10.x (NOT 11.x)
+# - tensorrt-cu12 (latest) installs TRT 11, so we pin to 10.7.0
+# =============================================================================
+
+# Core ML
+torch==2.13.0
+torchvision==0.28.0
+
+# Numerical/Scientific
+numpy==2.5.1
+scipy==1.18.0
+
+# Computer Vision
+opencv-python==5.0.0.93
+kornia==0.8.3
+
+# 3D Reconstruction
+pycolmap==4.1.1
+
+# Data/IO
+h5py==3.16.0
+tqdm==4.76.0
+gdown==5.3.3
+
+# Visualization
+matplotlib==3.11.1
+plotly==6.9.0
+
+# Hugging Face (for model loading)
+huggingface_hub==1.27.0
+safetensors==0.8.0
+
+# Jupyter
+notebook==7.6.1
+
+# LightGlue (pinned to specific commit)
+lightglue @ git+https://github.com/cvg/LightGlue@eb42fee2d71449efb0aa5c10549752b5d75384d8
+
+# =============================================================================
+# CUDA/TensorRT (installed separately due to special index URLs)
+# =============================================================================
+# nvidia-cudnn-cu12==9.24.0.43
+# tensorrt-cu12==10.7.0
+# tensorrt-cu12-bindings==10.7.0
+# tensorrt-cu12-libs==10.7.0
+# onnxruntime-gpu==1.28.0 (from onnxruntime-cuda-12 index)

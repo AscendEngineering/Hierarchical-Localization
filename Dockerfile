@@ -13,21 +13,23 @@ RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${PYTH
 COPY . /app
 WORKDIR app/
 
-RUN pip3 install --break-system-packages --upgrade pip
-RUN pip3 install --break-system-packages -r requirements.txt
-RUN pip3 install --break-system-packages huggingface_hub safetensors
-RUN pip3 install --break-system-packages notebook
+# Install all pinned dependencies
+RUN pip3 install --break-system-packages --upgrade pip==26.3
+RUN pip3 install --break-system-packages -r requirements-hloc.txt
 RUN pip3 install --break-system-packages -e .
 
-# Install ONNX Runtime with CUDA 12 support for accelerated inference
-RUN pip3 install --break-system-packages nvidia-cudnn-cu12
+# Install CUDA acceleration (cuDNN + TensorRT + ONNX Runtime)
+RUN pip3 install --break-system-packages nvidia-cudnn-cu12==9.24.0.43
 
-# Install TensorRT for maximum ONNX acceleration (2.5-3x speedup)
-# TensorRT requires specific CUDA version - use cu12 for CUDA 12.x
-RUN pip3 install --break-system-packages tensorrt-cu12 tensorrt-cu12-bindings tensorrt-cu12-libs
+# Install TensorRT 10.x (required by onnxruntime-gpu 1.28)
+# NOTE: tensorrt-cu12 (latest) installs TensorRT 11 which is incompatible
+# NOTE: Global pip config required because tensorrt-cu12 build calls pip internally
+RUN mkdir -p /root/.config/pip && \
+    echo '[global]\nbreak-system-packages = true' > /root/.config/pip/pip.conf
+RUN pip3 install --break-system-packages tensorrt-cu12==10.7.0 tensorrt-cu12-bindings==10.7.0 tensorrt-cu12-libs==10.7.0
 
-# Install ONNX Runtime with TensorRT support
-RUN pip3 install --break-system-packages onnxruntime-gpu --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
+# Install ONNX Runtime with TensorRT support (pinned)
+RUN pip3 install --break-system-packages onnxruntime-gpu==1.28.0 --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
 
 # Set library path for cuDNN and TensorRT
 ENV LD_LIBRARY_PATH=/usr/local/lib/python3.12/dist-packages/nvidia/cudnn/lib:/usr/local/lib/python3.12/dist-packages/tensorrt_libs:$LD_LIBRARY_PATH

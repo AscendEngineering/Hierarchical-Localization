@@ -59,9 +59,27 @@ project/
 - Clean separation: `localize/` for fast inference, `hloc/` for map creation
 
 ### Performance Tracking
-- [x] Achieve <1.0s/image (DONE: 0.96s average)
+- [x] Achieve <1.0s/image (DONE: 0.89s average)
+- [x] Pre-build covisibility graph (DONE: 2026-08-09)
+- [x] Analyze GPU cache transfers (DONE: already optimized - cache uses `device="cuda"`)
+- [x] Analyze deferred CUDA sync (DONE: doesn't help - `match_gpu()` syncs internally)
 - [ ] Document final performance breakdown
 - [ ] Test warmed-up cache performance
+- [ ] Re-export LightGlue with GPU-resident outputs (for async matching)
+- [ ] Batch multiple match pairs in single forward pass
+
+### Parameter Standardization
+- [ ] Create single config source for parameters such as `max_num_keypoints` used by SuperPoint, LightGlue profiles, and inference scripts
+  - Example: LightGlue `max_shapes=8192` but SuperPoint `max_num_keypoints=4096` → mismatch wastes TensorRT memory
+
+### TensorRT Configuration Cleanup
+- [ ] Make TensorRT limitations explicit in code (not just comments)
+  - SuperPoint: Remove `use_tensorrt` option entirely, or raise error if True
+  - MegaLoc: Same - remove TRT option or error on True
+  - Document in model docstrings why TRT is unsupported (ScatterND with reduction)
+- [ ] Update `build_trt_engines.py` to skip SuperPoint/MegaLoc (they can't use TRT)
+- [ ] Add validation in `get_onnx_providers()` to warn if TRT requested for unsupported models
+- [ ] Consider removing TRT-related code from SuperPoint/MegaLoc model files entirely
 
 ## Medium Priority
 
@@ -85,6 +103,8 @@ project/
 
 ## Completed
 - [x] ONNX model integration (SuperPoint, LightGlue, MegaLoc)
+- [x] Pre-build covisibility graph at map load (2026-08-09) - ~5-15ms/query savings
+- [x] Achieve 0.89s/image average (2026-08-09)
 - [x] TensorRT optimization
 - [x] Parallel feature extraction (SuperPoint + MegaLoc)
 - [x] LRU cache for map features

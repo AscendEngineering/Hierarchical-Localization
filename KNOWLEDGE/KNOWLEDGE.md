@@ -1,6 +1,6 @@
 # ONNX Accelerated Visual Localization - Knowledge Base
 
-**Last Updated:** 2026-08-02
+**Last Updated:** 2026-08-09
 
 This document captures all knowledge gained during the development of ONNX-accelerated visual localization models, including TensorRT optimization, debugging sessions, and architectural decisions.
 
@@ -274,6 +274,37 @@ TensorRT generates several cache files:
 ```
 
 **Important:** Cache is GPU-specific! An engine built for RTX 4090 (sm89) won't work on other GPUs.
+
+### TensorRT Operator Limitations
+
+**Not all ONNX models can use TensorRT.** Some operators are unsupported:
+
+| Model | TensorRT Support | Issue |
+|-------|------------------|-------|
+| **LightGlue** | ✅ YES | Specifically exported for TRT (`.trt.onnx` models from LightGlue-ONNX) |
+| **SuperPoint** | ❌ NO | Uses `ScatterND` with `reduction` attribute - unsupported by TRT |
+| **MegaLoc (DINOv2)** | ❌ NO | Same `ScatterND` with `reduction` issue |
+
+**Error message:**
+```
+[ERROR] In node 87 with name: /ScatterND and operator: ScatterND (importScatterND): 
+UNSUPPORTED_NODE_ATTR: Assertion failed: !attrs.count("reduction"): 
+Attribute reduction is not supported.
+```
+
+**Root cause:** TensorRT's ONNX parser doesn't support `ScatterND` with the `reduction` attribute (even `reduction='none'`). This is a limitation in TensorRT 10.x and earlier.
+
+**Workarounds:**
+1. Re-export models avoiding `ScatterND` with reduction (requires modifying source PyTorch code)
+2. Use a custom TensorRT plugin
+3. Accept CUDA EP for these models (current approach - still fast)
+
+**Current configuration (optimal):**
+- SuperPoint: CUDA EP (~4ms)
+- MegaLoc: CUDA EP (~12ms)
+- LightGlue: TensorRT EP (~8ms) ← Only model using TRT
+
+See also: [NVIDIA TensorRT GitHub Issue #4425](https://github.com/NVIDIA/TensorRT/issues/4425)
 
 ---
 
@@ -736,6 +767,34 @@ RUN pip install onnxruntime-gpu \
 # Set library path
 ENV LD_LIBRARY_PATH=/usr/local/lib/python3.12/dist-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH
 ```
+
+### TensorRT Version Compatibility
+
+**Critical:** ONNX Runtime requires a specific TensorRT version. ORT 1.28 requires TensorRT **10.x** (`libnvinfer.so.10`).
+
+**Symptom:**
+```
+Failed to load library libonnxruntime_providers_tensorrt.so with error: 
+libnvinfer.so.10: cannot open shared object file: No such file or directory
+```
+
+**Cause:** TensorRT 11.x installed (provides `libnvinfer.so.11`), but ORT 1.28 links against `libnvinfer.so.10`.
+
+**Solution:** Pin TensorRT to 10.7.0:
+
+```dockerfile
+# First, set global pip config to allow break-system-packages (needed for tensorrt build)
+RUN mkdir -p /root/.config/pip && \
+    echo '[global]\nbreak-system-packages = true' > /root/.config/pip/pip.conf
+
+# Install TensorRT 10.7.0 (compatible with ORT 1.28)
+RUN pip3 install tensorrt-cu12==10.7.0 tensorrt-cu12-bindings==10.7.0 tensorrt-cu12-libs==10.7.0
+
+# Add TensorRT libs to LD_LIBRARY_PATH
+ENV LD_LIBRARY_PATH=/usr/local/lib/python3.12/dist-packages/tensorrt_libs:$LD_LIBRARY_PATH
+```
+
+**Note:** The `tensorrt-cu12` package internally calls pip during build, so the global pip config must be set first.
 
 ### Docker Run Command
 
@@ -1534,3 +1593,102 @@ hloc/match_and_localize.py
 1. **Pre-load all map features to GPU** at startup (eliminates HDF5 entirely)
 2. **Batch multiple queries** in single forward pass
 3. **Reduce `num_matched`** from 30 → 20 for faster matching
+
+---
+
+## Session: 2026-08-09 - Performance Optimizations
+
+### Benchmark Reference Configuration
+
+This is the current working configuration for reference:
+
+```
+==================================================
+Running inference on map: my_office
+==================================================
+
+Found 3 query images:
+  img1: IMG_1766.jpg
+  img2: my_desk.jpg
+  img3: my_office1.jpg
+
+[SETUP] Loading map and models (one-time)...
+  Map: 196 images, 59652 points
+  Building covisibility graph...
+  Loading SuperPoint ONNX with TensorRT...
+Loading SuperPoint ONNX from /app/onnx_models/superpoint_onnx/models/superpoint_onnx.onnx...
+  Provider: CUDAExecutionProvider
+  Loading MegaLoc ONNX with TensorRT...
+Loading MegaLoc ONNX from /app/onnx_models/megaloc_onnx/models/megaloc_onnx.onnx
+  Providers: ['CUDAExecutionProvider', 'CPUExecutionProvider']
+  Active provider: CUDAExecutionProvider
+Warming up MegaLoc ONNX (3 iterations)...
+  Warmup complete!
+  Loading LightGlue TensorRT matcher...
+Loading LightGlue ONNX from /app/onnx_models/lightglue_onnx/models/lightglue_onnx.trt.onnx...
+  Provider: TensorrtExecutionProvider
+  Loading database global descriptors...
+  Loaded 196 database descriptors
+  Setup time: 5.35s
+
+[INFERENCE] Processing 3 queries (fully in-memory)...
+
+  [1/3] IMG_1766.jpg
+    TOTAL: 1.12s
+    Position: (2.290, 0.292, -1.509) | Inliers: 934
+
+  [2/3] my_desk.jpg
+    TOTAL: 0.62s
+    Position: (2.118, 0.982, -3.228) | Inliers: 27
+
+  [3/3] my_office1.jpg
+    TOTAL: 0.93s
+    Position: (2.405, -0.024, -1.305) | Inliers: 87
+
+==================================================
+TIMING SUMMARY (Fully In-Memory Pipeline)
+==================================================
+  Setup (one-time): 5.35s
+  ---------------------------------
+    IMG_1766.jpg: 1.12s
+    my_desk.jpg: 0.62s
+    my_office1.jpg: 0.93s
+  ---------------------------------
+  AVERAGE: 0.89s/image
+  Cache stats: {'size': 85, 'max_size': 200, 'hits': 5, 'misses': 85, 'hit_rate': '5.6%'}
+  Total pipeline: 8.02s
+```
+
+### Model Providers Summary
+
+| Model | Provider | Notes |
+|-------|----------|-------|
+| SuperPoint | CUDAExecutionProvider | TRT unsupported (ScatterND) |
+| MegaLoc | CUDAExecutionProvider | TRT unsupported (ScatterND) |
+| LightGlue | TensorrtExecutionProvider | Uses `.trt.onnx` model |
+
+### Optimizations Implemented
+
+#### 1. Pre-built Covisibility Graph
+
+**Files changed:** `hloc/match_and_localize.py`, `inference/inference.py`
+
+**What:** Pre-compute covisibility graph once at map load instead of computing during each query.
+
+```python
+# At setup (once):
+covis_graph = build_covisibility_graph(colmap_model)
+
+# At query time (fast):
+clusters = cluster_by_covisibility(db_ids, reconstruction, covisibility_graph=covis_graph)
+```
+
+**Savings:** ~5-15ms per query (varies with map size)
+### Key Insight: Matching Bottleneck
+
+The 30 sequential LightGlue matches dominate the runtime (~600-700ms). Each `match_gpu()` call does an internal CUDA sync via `io_binding.copy_outputs_to_cpu()`.
+
+**To go faster would require:**
+1. Re-export LightGlue ONNX with GPU-resident outputs
+2. Batch multiple match pairs in single forward pass
+3. Reduce `num_matched` from 30 (accuracy tradeoff)
