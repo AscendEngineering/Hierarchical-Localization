@@ -87,6 +87,9 @@ class LightGlueONNX:
             HAS_TORCH and 
             self.provider in ('CUDAExecutionProvider', 'TensorrtExecutionProvider')
         )
+        
+        # Pre-allocate IO Binding for reuse (avoids allocation overhead per call)
+        self._io_binding = self.session.io_binding() if self.use_io_binding else None
     
     def _find_model(self, features: str) -> Path:
         """Locate the best available model file."""
@@ -250,11 +253,12 @@ class LightGlueONNX:
         kp0 = kp0.contiguous()
         kp1 = kp1.contiguous()
         
-        # Setup IO Binding
-        io_binding = self.session.io_binding()
+        # Reuse pre-allocated IO Binding (clear previous bindings)
+        self._io_binding.clear_binding_inputs()
+        self._io_binding.clear_binding_outputs()
         
         # Bind inputs from GPU tensors
-        io_binding.bind_input(
+        self._io_binding.bind_input(
             name='kpts0',
             device_type='cuda',
             device_id=0,
@@ -262,7 +266,7 @@ class LightGlueONNX:
             shape=tuple(kp0.shape),
             buffer_ptr=kp0.data_ptr(),
         )
-        io_binding.bind_input(
+        self._io_binding.bind_input(
             name='kpts1',
             device_type='cuda',
             device_id=0,
@@ -270,7 +274,7 @@ class LightGlueONNX:
             shape=tuple(kp1.shape),
             buffer_ptr=kp1.data_ptr(),
         )
-        io_binding.bind_input(
+        self._io_binding.bind_input(
             name='desc0',
             device_type='cuda',
             device_id=0,
@@ -278,7 +282,7 @@ class LightGlueONNX:
             shape=tuple(desc0.shape),
             buffer_ptr=desc0.data_ptr(),
         )
-        io_binding.bind_input(
+        self._io_binding.bind_input(
             name='desc1',
             device_type='cuda',
             device_id=0,
@@ -289,13 +293,13 @@ class LightGlueONNX:
         
         # Let ONNX allocate outputs (variable size)
         for name in self.output_names:
-            io_binding.bind_output(name, device_type='cpu')
+            self._io_binding.bind_output(name, device_type='cpu')
         
         # Run inference
-        self.session.run_with_iobinding(io_binding)
+        self.session.run_with_iobinding(self._io_binding)
         
         # Get outputs
-        outputs = io_binding.copy_outputs_to_cpu()
+        outputs = self._io_binding.copy_outputs_to_cpu()
         
         # Parse outputs
         if len(outputs) == 2:
