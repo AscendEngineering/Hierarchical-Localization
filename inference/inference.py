@@ -28,7 +28,7 @@ import cv2
 from hloc import extract_features, match_features
 from hloc.utils.cache import LRUCache
 from hloc.utils.io import list_h5_names
-from hloc.match_and_localize import localize_image
+from hloc.match_and_localize import localize_image, build_covisibility_graph
 
 # Local visualization utilities
 from vis import visualize_localization, show_figure
@@ -136,13 +136,18 @@ def run_inference(map_name: str):
     colmap_model = pycolmap.Reconstruction(sfm_dir)
     print(f"  Map: {colmap_model.num_reg_images()} images, {colmap_model.num_points3D()} points")
     
-    # Configuration for feature extraction (TensorRT accelerated)
+    # Pre-build covisibility graph (faster clustering at query time)
+    print("  Building covisibility graph...")
+    covis_graph = build_covisibility_graph(colmap_model)
+    
+    # Configuration for feature extraction
+    # NOTE: SuperPoint uses ScatterND with reduction attribute, unsupported by TensorRT
     feature_conf = {
         "output": "feats-superpoint-n4096-r1024",
         "model": {
             "name": "superpoint_onnx",
             "max_num_keypoints": 4096,
-            "use_tensorrt": True,
+            "use_tensorrt": False,  # ScatterND reduction not supported by TRT
         },
         "preprocessing": {
             "grayscale": True,
@@ -232,6 +237,7 @@ def run_inference(map_name: str):
             num_matched=30,
             ref_cache=ref_cache,
             covisibility_clustering=True,
+            covisibility_graph=covis_graph,
             ransac_thresh=12.0,
         )
         

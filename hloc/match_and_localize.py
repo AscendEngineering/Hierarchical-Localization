@@ -323,17 +323,48 @@ def match_query_to_db_inmem(
 # =============================================================================
 
 
+def build_covisibility_graph(
+    reconstruction: pycolmap.Reconstruction,
+) -> Dict[int, set]:
+    """
+    Pre-build covisibility graph from reconstruction (call once at map load).
+    
+    Args:
+        reconstruction: COLMAP reconstruction.
+    
+    Returns:
+        Dict mapping image_id -> set of covisible image_ids.
+    """
+    graph = {}
+    for img_id, img in reconstruction.images.items():
+        covisible = set()
+        for p2D in img.points2D:
+            if p2D.has_point3D():
+                for obs in reconstruction.points3D[p2D.point3D_id].track.elements:
+                    if obs.image_id != img_id:
+                        covisible.add(obs.image_id)
+        graph[img_id] = covisible
+    return graph
+
+
 def cluster_by_covisibility(
     frame_ids: List[int],
     reconstruction: pycolmap.Reconstruction,
+    covisibility_graph: Optional[Dict[int, set]] = None,
 ) -> List[List[int]]:
     """
     Group frames into clusters based on shared 3D point observations.
+
+    Args:
+        frame_ids: List of database image IDs to cluster.
+        reconstruction: COLMAP reconstruction (used if covisibility_graph is None).
+        covisibility_graph: Pre-built graph from build_covisibility_graph() (faster).
 
     Returns clusters sorted by size (largest first).
     """
     clusters = []
     visited = set()
+    frame_set = set(frame_ids)
 
     for seed_id in frame_ids:
         if seed_id in visited:
@@ -349,14 +380,20 @@ def cluster_by_covisibility(
             visited.add(fid)
             cluster.append(fid)
 
-            observed = reconstruction.images[fid].points2D
-            covisible = {
-                obs.image_id
-                for p2D in observed
-                if p2D.has_point3D()
-                for obs in reconstruction.points3D[p2D.point3D_id].track.elements
-            }
-            queue |= (covisible & set(frame_ids)) - visited
+            # If covisibility graph is provided (fast path)
+            if covisibility_graph is not None:
+                covisible = covisibility_graph.get(fid, set())
+            # Compute on-the-fly (slow path)
+            else:
+                observed = reconstruction.images[fid].points2D
+                covisible = {
+                    obs.image_id
+                    for p2D in observed
+                    if p2D.has_point3D()
+                    for obs in reconstruction.points3D[p2D.point3D_id].track.elements
+                }
+            
+            queue |= (covisible & frame_set) - visited
 
         clusters.append(cluster)
 
@@ -459,6 +496,7 @@ def localize_image(
     num_matched: int = 30,
     ref_cache: Optional[LRUCache] = None,
     covisibility_clustering: bool = True,
+    covisibility_graph: Optional[Dict[int, set]] = None,
     ransac_thresh: float = 12.0,
     device: str = "cuda",
 ) -> Optional[Dict]:
@@ -480,6 +518,7 @@ def localize_image(
         num_matched: Number of database images to match.
         ref_cache: Optional LRU cache for reference features.
         covisibility_clustering: Whether to cluster by covisibility.
+        covisibility_graph: Pre-built graph from build_covisibility_graph() (faster).
         ransac_thresh: PnP RANSAC threshold in pixels.
         device: Device to run on.
 
@@ -515,7 +554,7 @@ def localize_image(
 
     # 6. Localize
     if covisibility_clustering:
-        clusters = cluster_by_covisibility(db_ids, reconstruction)
+        clusters = cluster_by_covisibility(db_ids, reconstruction, covisibility_graph)
         best_ret, best_inliers = None, 0
 
         for cluster_ids in clusters:
