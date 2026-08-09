@@ -171,12 +171,13 @@ confs = {
         "model": {"name": "megaloc"},
         "preprocessing": {"resize_max": 1024},
     },
-    # MegaLoc with ONNX/TensorRT acceleration (~3-5x faster)
+    # MegaLoc with ONNX acceleration
+    # NOTE: MegaLoc (DINOv2) uses ScatterND with reduction, unsupported by TensorRT
     "megaloc_onnx": {
         "output": "global-feats-megaloc",  # Compatible output format
         "model": {
             "name": "megaloc_onnx",
-            "use_tensorrt": True,
+            "use_tensorrt": False,  # ScatterND reduction not supported by TRT
             "resize": 322,  # MegaLoc default eval size
         },
         "preprocessing": {"resize_max": 1024},

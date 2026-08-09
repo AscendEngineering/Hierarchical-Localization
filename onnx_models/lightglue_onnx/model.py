@@ -111,8 +111,8 @@ class LightGlueONNX:
         # Dynamic shapes for variable keypoint counts
         d = self.desc_dim
         min_shapes = f"kpts0:1x1x2,kpts1:1x1x2,desc0:1x1x{d},desc1:1x1x{d}"
-        opt_shapes = f"kpts0:1x2048x2,kpts1:1x2048x2,desc0:1x2048x{d},desc1:1x2048x{d}"
-        max_shapes = f"kpts0:1x8192x2,kpts1:1x8192x2,desc0:1x8192x{d},desc1:1x8192x{d}"
+        opt_shapes = f"kpts0:1x4096x2,kpts1:1x4096x2,desc0:1x4096x{d},desc1:1x4096x{d}"
+        max_shapes = f"kpts0:1x4096x2,kpts1:1x4096x2,desc0:1x4096x{d},desc1:1x4096x{d}"
         
         providers = [
             "TensorrtExecutionProvider",
