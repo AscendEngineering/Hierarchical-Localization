@@ -150,7 +150,6 @@ def run_inference(map_name: str):
             "name": "superpoint_onnx",
             "max_num_keypoints": 2048,
             "force_num_keypoints": True,  # Always return exactly max_num_keypoints (topk)
-            "use_tensorrt": False,  # ScatterND reduction not supported by TRT
         },
         "preprocessing": {
             "grayscale": True,
@@ -158,20 +157,20 @@ def run_inference(map_name: str):
         },
     }
 
-    # Configuration for retrieval (ONNX/TensorRT accelerated)
+    # Configuration for retrieval (CUDA-accelerated MegaLoc)
     retrieval_conf = extract_features.confs["megaloc_onnx"]
 
     # Configuration for matching
     matcher_conf = match_features.confs["superpoint_onnx+lightglue_onnx"]
     
     # Pre-load all models (one-time)
-    print("  Loading SuperPoint ONNX with TensorRT...")
+    print("  Loading SuperPoint ONNX (CUDA)...")
     superpoint_model = extract_features.get_model(feature_conf)
     
-    print("  Loading MegaLoc ONNX with TensorRT...")
+    print("  Loading MegaLoc ONNX (CUDA)...")
     megaloc_model = extract_features.get_model(retrieval_conf)
     
-    print("  Loading LightGlue TensorRT matcher...")
+    print("  Loading LightGlue ONNX (TensorRT)...")
     matcher_model = match_features.get_model(matcher_conf)
     
     # Create LRU cache for map features (persists across queries)

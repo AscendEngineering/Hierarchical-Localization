@@ -189,9 +189,9 @@ def build_map(video_name: str):
         return None
     
     # ============ STEP 2: CONFIGURE FEATURE EXTRACTION ============
-    print("\n[2/6] Extracting SuperPoint features (ONNX-accelerated)...")
+    print("\n[2/6] Extracting SuperPoint features (CUDA-accelerated)...")
     
-    # SuperPoint ONNX configuration for TensorRT-accelerated pipeline:
+    # SuperPoint ONNX configuration:
     # - Grayscale images (SuperPoint requirement)
     # - 2048 keypoints with force_num_keypoints (topk, like fabio-sim)
     # - This ensures EXACTLY 2048 keypoints per image for batched LightGlue
@@ -232,7 +232,7 @@ def build_map(video_name: str):
     # Sequential window size, larger for more images
     seq_window = 20 if num_images > 50 else 10
     
-    # Step 3a: Extract global descriptors (using ONNX for TensorRT acceleration)
+    # Step 3a: Extract global descriptors (CUDA-accelerated MegaLoc)
     print("  Extracting global descriptors (MegaLoc ONNX)...")
     global_conf = extract_features.confs["megaloc_onnx"]
     global_features_path = extract_features.main(
@@ -278,7 +278,7 @@ def build_map(video_name: str):
     # ============ STEP 4: MATCH FEATURES ============
     print("\n[4/6] Matching features with LightGlue (TensorRT-accelerated)...")
     
-    # Use SuperPoint + LightGlue ONNX with TensorRT
+    # Use SuperPoint + LightGlue ONNX (TensorRT provider selected automatically)
     matcher_conf = match_features.confs["superpoint_onnx+lightglue_onnx"]
     
     # Match features between all image pairs

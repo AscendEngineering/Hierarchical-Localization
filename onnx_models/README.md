@@ -2,30 +2,65 @@
 
 Accelerated visual localization models using ONNX Runtime with TensorRT support.
 
+## Architecture
+
+All models inherit from `BaseONNXModel` which provides:
+- Unified provider configuration (TensorRT → CUDA → CPU fallback)
+- IO Binding for zero-copy GPU inference
+- Consistent `preprocess()` → `forward()` → `postprocess()` pipeline
+
+```
+BaseONNXModel
+    ├── SuperPointONNX   (keypoint detection)
+    ├── LightGlueONNX    (feature matching)
+    └── MegaLocONNX      (global descriptors)
+```
+
 ## Models
 
-| Model | Purpose | Input | Output | TensorRT | Precision |
-|-------|---------|-------|--------|----------|-----------|
-| SuperPoint | Keypoint detection | Grayscale image | Keypoints, scores, 256-dim descriptors | ✓ | FP16 |
-| LightGlue | Feature matching | Two sets of keypoints + descriptors | Match indices and scores | ✓ | FP16 |
-| MegaLoc | Global descriptors | RGB image | 8448-dim descriptor | ✓ | FP32 |
+| Model | Provider | Input | Output | Notes |
+|-------|----------|-------|--------|-------|
+| **SuperPointONNX** | CUDA | Grayscale `[1,1,H,W]` | Keypoints, scores, 256-dim descriptors | TensorRT disabled (ScatterND unsupported) |
+| **LightGlueONNX** | TensorRT | Keypoints + descriptors | Match indices and scores | FP16, dynamic shapes |
+| **MegaLocONNX** | CUDA | RGB `[1,3,322,322]` | 8448-dim descriptor | TensorRT disabled (numerical issues) |
 
 ## Quick Start
 
 ```python
 from onnx_models import SuperPointONNX, LightGlueONNX, MegaLocONNX
 
-# Feature extraction (with TensorRT)
-sp = SuperPointONNX(use_tensorrt=True)
+# Feature extraction
+sp = SuperPointONNX()
 keypoints, scores, descriptors = sp.extract(grayscale_image)
 
 # Feature matching
 lg = LightGlueONNX()
-matches, scores = lg.match(kp0, kp1, desc0, desc1)
+matches, scores = lg.match(kp0, kp1, desc0, desc1, 
+                           image_size0=(H, W), image_size1=(H, W))
 
 # Global descriptor
-ml = MegaLocONNX(use_tensorrt=True)
+ml = MegaLocONNX()
 descriptor = ml.extract(rgb_image)
+```
+
+## GPU Path (Zero-Copy)
+
+For best performance, use the GPU methods with CUDA tensors:
+
+```python
+import torch
+
+# SuperPoint - input stays on GPU, output on GPU
+image = torch.rand(1, 1, 768, 1024, device='cuda')
+kp, scores, desc = sp.extract_gpu(image)
+
+# MegaLoc - zero-copy input and output
+image = torch.rand(1, 3, 322, 322, device='cuda')
+descriptor = ml.extract_gpu(image)  # Returns GPU tensor
+
+# LightGlue - GPU tensors in, numpy out
+matches, scores = lg.match_gpu(kp0, kp1, desc0, desc1, 
+                               image_size0=(H, W), image_size1=(H, W))
 ```
 
 ## Setup
@@ -71,8 +106,9 @@ python -m onnx_models.megaloc_onnx.setup
 ```
 onnx_models/
 ├── __init__.py          # Public API
-├── utils.py             # Shared utilities
-├── hloc_wrappers.py     # hloc integration
+├── base_onnx.py         # BaseONNXModel base class
+├── utils.py             # Provider configuration
+├── hloc_wrappers.py     # hloc integration (wrappers inherit from models)
 ├── setup.py             # Download/export all models
 ├── build_trt_engines.py # Pre-build TensorRT engines
 │
