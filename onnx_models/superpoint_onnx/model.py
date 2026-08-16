@@ -198,3 +198,16 @@ class SuperPointONNX(BaseONNXModel):
             torch.from_numpy(sc).to(device),
             torch.from_numpy(desc).to(device),
         )
+    
+    def warmup(self, n_iters: int = 3):
+        """Run warmup iterations with correctly sized dummy input."""
+        if self.verbose:
+            print(f"Warming up {self.__class__.__name__} ({n_iters} iterations)...")
+        
+        # Use reasonable image size for SuperPoint (640x480 grayscale)
+        dummy = np.random.randn(1, 1, 480, 640).astype(np.float32)
+        for _ in range(n_iters):
+            self.session.run(None, {"image": dummy})
+        
+        if self.verbose:
+            print("  Warmup complete!")
