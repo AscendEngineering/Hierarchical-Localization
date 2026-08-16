@@ -35,8 +35,8 @@ class SuperPointONNXWrapper(SuperPointONNX):
             device=self.conf.get("device", "cuda"),
             force_num_keypoints=self.conf.get("force_num_keypoints", False),
         )
-        # Warmup CUDA kernels
-        self.warmup()
+        # Skip warmup for now (TODO: fix warmup input shapes)
+        # self.warmup()
     
     def eval(self):
         """No-op for hloc compatibility (ONNX models are always in eval mode)."""

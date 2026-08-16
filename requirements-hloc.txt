@@ -10,24 +10,24 @@
 # =============================================================================
 
 # Core ML
-torch==2.13.0
-torchvision==0.28.0
+# NOTE: torch/torchvision installed separately in Dockerfile with cu126 index URL
+# (default pip torch bundles CUDA 13 libs which require driver 570+)
 
 # Numerical/Scientific
 numpy==2.5.1
 scipy==1.18.0
 
 # Computer Vision
-opencv-python==5.0.0.93
+opencv-python-headless==5.0.0.93  # headless: no GUI deps, ~50MB smaller
 kornia==0.8.3
 
 # 3D Reconstruction
 pycolmap==4.1.1
 
 # Data/IO
-h5py==3.16.0
-tqdm==4.76.0
-gdown==5.3.3
+h5py>=3.10.0
+tqdm>=4.66.0
+gdown>=5.0.0
 
 # Visualization
 matplotlib==3.11.1

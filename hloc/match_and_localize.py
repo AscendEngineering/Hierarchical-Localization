@@ -73,7 +73,7 @@ def _preprocess_image(
 # =============================================================================
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def extract_features_inmem(
     image_path: Path,
     model,
@@ -111,15 +111,17 @@ def extract_features_inmem(
 
     if "keypoints" in result:
         size = np.array(image.shape[-2:][::-1])
-        scales = (original_size / size).astype(np.float32)
-        kp = result["keypoints"].cpu().numpy()
-        kp = (kp + 0.5) * scales[None] - 0.5
-        result["keypoints"] = torch.from_numpy(kp).to(device)
+        # Scale keypoints on GPU (avoid CPU round-trip)
+        scales = torch.tensor(
+            (original_size / size).astype(np.float32), device=device
+        )
+        kp = result["keypoints"]
+        result["keypoints"] = (kp + 0.5) * scales - 0.5
 
     return result
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def extract_global_descriptor_inmem(
     image_path: Path,
     model,
@@ -251,7 +253,7 @@ def _postprocess_matches(pred: Dict) -> Tuple[np.ndarray, np.ndarray]:
     return matches, scores
 
 
-@torch.no_grad()
+@torch.inference_mode()
 def match_query_to_db_inmem(
     query_feats: Dict[str, torch.Tensor],
     db_names: List[str],
@@ -284,23 +286,21 @@ def match_query_to_db_inmem(
     else:
         ref_feats = _load_features_to_device(features_ref, ref_names, device)
 
-    # Ensure query features are on device
-    qf = {
-        k: v.to(device) if isinstance(v, torch.Tensor) else v
+    # Pre-build query data dict (reused for all matches)
+    qf_data = {
+        f"{k}0": (v.to(device) if isinstance(v, torch.Tensor) and v.device.type != device else v).unsqueeze(0)
         for k, v in query_feats.items()
+        if k != "image_size" and isinstance(v, torch.Tensor)
     }
+    qf_shape = {"image0": {"shape": (1, 1) + query_feats["image_size"][::-1]}}
 
     # Match against each database image
     results = {}
     for db_name in db_names:
         rf = ref_feats[db_name]
 
-        # Build input dict
-        data = {
-            f"{k}0": (v.to(device) if v.device.type != device else v).unsqueeze(0)
-            for k, v in qf.items()
-            if k != "image_size" and isinstance(v, torch.Tensor)
-        }
+        # Build input dict (reuse query data)
+        data = dict(qf_data)
         data.update(
             {
                 f"{k}1": (v.to(device) if v.device.type != device else v).unsqueeze(0)
@@ -308,7 +308,7 @@ def match_query_to_db_inmem(
                 if k != "image_size" and isinstance(v, torch.Tensor)
             }
         )
-        data["image0"] = {"shape": (1, 1) + qf["image_size"][::-1]}
+        data.update(qf_shape)
         data["image1"] = {"shape": (1, 1) + rf["image_size"][::-1]}
 
         pred = matcher_model(data)

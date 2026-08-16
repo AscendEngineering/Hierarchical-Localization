@@ -1,38 +1,44 @@
 FROM colmap/colmap:latest
-MAINTAINER Paul-Edouard Sarlin
-ARG PYTHON_VERSION=3.12
-# Remove CUDA repo to avoid mirror sync issues (CUDA already installed in base image)
-RUN rm -f /etc/apt/sources.list.d/cuda*.list || true
-RUN apt-get update -y
-RUN apt-get install -y unzip wget software-properties-common git
-RUN add-apt-repository ppa:deadsnakes/ppa && \
-    apt-get -y update && \
-    apt-get install -y python${PYTHON_VERSION}
-RUN wget https://bootstrap.pypa.io/get-pip.py && python${PYTHON_VERSION} get-pip.py --break-system-packages
-RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python${PYTHON_VERSION} 1
-COPY . /app
-WORKDIR app/
+LABEL maintainer="Paul-Edouard Sarlin"
 
-# Install all pinned dependencies
-RUN pip3 install --break-system-packages --upgrade pip==26.3
-RUN pip3 install --break-system-packages -r requirements-hloc.txt
-RUN pip3 install --break-system-packages -e .
+# Install Python and git (Ubuntu 24.04 ships with Python 3.12)
+# ca-certificates is pre-installed in base image
+RUN rm -f /etc/apt/sources.list.d/cuda*.list || true && \
+    apt-get update -y && \
+    apt-get install -y --no-install-recommends \
+        python3 \
+        python3-pip \
+        git && \
+    rm -rf /var/lib/apt/lists/*
 
-# Install CUDA acceleration (cuDNN + TensorRT + ONNX Runtime)
-RUN pip3 install --break-system-packages nvidia-cudnn-cu12==9.24.0.43
+WORKDIR /app
 
-# Install TensorRT 10.x (required by onnxruntime-gpu 1.28)
-# NOTE: tensorrt-cu12 (latest) installs TensorRT 11 which is incompatible
-# NOTE: Global pip config required because tensorrt-cu12 build calls pip internally
+# Copy only requirements file (code is mounted at runtime)
+COPY requirements-hloc.txt /tmp/requirements-hloc.txt
+
+# Global pip config (required because tensorrt-cu12 build calls pip internally)
 RUN mkdir -p /root/.config/pip && \
     echo '[global]\nbreak-system-packages = true' > /root/.config/pip/pip.conf
-RUN pip3 install --break-system-packages tensorrt-cu12==10.7.0 tensorrt-cu12-bindings==10.7.0 tensorrt-cu12-libs==10.7.0
 
-# Install ONNX Runtime with TensorRT support (pinned)
-RUN pip3 install --break-system-packages onnxruntime-gpu==1.28.0 --extra-index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
+# Install PyTorch with CUDA 12.6 (default pip installs cu130 which requires driver 570+)
+# torch 2.6.0 is ~5% faster than 2.13.0 for inference
+RUN pip3 install torch==2.6.0+cu126 torchvision==0.21.0+cu126 \
+        --index-url https://download.pytorch.org/whl/cu126
+
+# Install remaining Python dependencies
+# Note: --break-system-packages is set in pip.conf above
+# onnxruntime-gpu 1.20.0: ORT 1.28+ requires CUDA 13 libs (libcublasLt.so.13)
+# nvidia-cudnn-cu12: let torch manage this dependency (torch 2.6.0 needs 9.5.1.17)
+RUN pip3 install \
+        -r /tmp/requirements-hloc.txt \
+        tensorrt-cu12==10.7.0 \
+        tensorrt-cu12-bindings==10.7.0 \
+        tensorrt-cu12-libs==10.7.0 \
+        onnxruntime-gpu==1.20.0 && \
+    rm /tmp/requirements-hloc.txt
 
 # Set library path for cuDNN and TensorRT
 ENV LD_LIBRARY_PATH=/usr/local/lib/python3.12/dist-packages/nvidia/cudnn/lib:/usr/local/lib/python3.12/dist-packages/tensorrt_libs:$LD_LIBRARY_PATH
 
-# Pre-download models to cache
-RUN python3 -c "import torch; torch.hub.load('gmberton/MegaLoc', 'get_trained_model', trust_repo=True)"
+# Add /app to Python path (code is mounted at runtime, no pip install -e needed)
+ENV PYTHONPATH=/app
